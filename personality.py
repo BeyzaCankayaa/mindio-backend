@@ -43,10 +43,7 @@ def submit_personality(
     payload: PersonalityRequest,
     db: Session = Depends(get_db)   # ❗ Buraya dikkat: next(get_db()) YOK
 ):
-    """
-    Personality test cevaplarını kaydeder.
-    Şimdilik user_id body'den geliyor, ileride JWT'den çekilebilir.
-    """
+    
     q4_joined = ", ".join(payload.q4_answer)
 
     record = PersonalityResponse(

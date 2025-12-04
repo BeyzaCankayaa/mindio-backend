@@ -48,9 +48,7 @@ def add_points(
     payload: PointsRequest,
     db: Session = Depends(get_db)    # ❗ Burada da Depends
 ):
-    """
-    Kullanıcıya puan ekler, badge seviyesini otomatik günceller.
-    """
+   
     if payload.points <= 0:
         raise HTTPException(status_code=400, detail="Points must be positive.")
 
@@ -73,9 +71,7 @@ def get_gamification(
     user_id: int,
     db: Session = Depends(get_db)    # ❗ Burada da
 ):
-    """
-    Kullanıcının puan ve badge bilgisini döner.
-    """
+   
     record = db.query(Gamification).filter(Gamification.user_id == user_id).first()
     if not record:
         record = Gamification(user_id=user_id, points=0, badge_level="Newbie")

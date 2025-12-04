@@ -37,9 +37,7 @@ def create_suggestion(
     payload: SuggestionCreate,
     db: Session = Depends(get_db)   # ❗ Burada da Depends
 ):
-    """
-    Kullanıcının anonim önerisini kaydeder.
-    """
+   
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Suggestion text cannot be empty.")
@@ -61,9 +59,7 @@ def create_suggestion(
 def list_suggestions(
     db: Session = Depends(get_db)   # ❗ Burada da
 ):
-    """
-    En son eklenen önerileri listeler (max 50).
-    """
+   
     suggestions = (
         db.query(Suggestion)
         .filter(Suggestion.is_approved == True)
