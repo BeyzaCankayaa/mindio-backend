@@ -15,13 +15,13 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 
 SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE_THIS_SECRET")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", 12))
+ACCESS_TOKEN_EXPIRE_HOURS = 12
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 bearer_scheme = HTTPBearer()
 
 
-# --------- Schemas --------- #
+# ---------- SCHEMAS ----------
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -45,7 +45,8 @@ class UserOut(BaseModel):
     username: str
 
     class Config:
-        orm_mode = True  # Pydantic v2'de from_attributes ama şu an sadece warning veriyor
+        # Pydantic v2 için (eskiden orm_mode)
+        from_attributes = True
 
 
 class RegisterResponse(BaseModel):
@@ -53,7 +54,7 @@ class RegisterResponse(BaseModel):
     user: UserOut
 
 
-# --------- Security helpers --------- #
+# ---------- SECURITY HELPERS ----------
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
@@ -93,27 +94,18 @@ def get_current_user(
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email = payload.get("sub")
         if email is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token payload",
-            )
+            raise HTTPException(status_code=401, detail="Invalid token payload")
     except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     user = get_user_by_email(db, email=email)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
+        raise HTTPException(status_code=401, detail="User not found")
 
     return user
 
 
-# --------- Routes --------- #
+# ---------- ROUTES ----------
 
 @router.post(
     "/register",
@@ -123,19 +115,19 @@ def get_current_user(
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     # Aynı email var mı?
     if get_user_by_email(db, payload.email):
+        # Duplicate email → 409 Conflict
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Email is already registered.",
+            detail="Email already in use",
         )
 
     # Aynı username var mı?
     if db.query(User).filter(User.username == payload.username).first():
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Username is already taken.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already in use",
         )
 
-    # Yeni kullanıcı oluştur
     user = User(
         email=payload.email,
         username=payload.username,
@@ -155,10 +147,10 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = authenticate_user(db, payload.email, payload.password)
     if not user:
-        # 401 Unauthorized → auth hatası için daha doğru
+        # Yanlış email/şifre → 401
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password.",
+            detail="Invalid email or password",
         )
 
     token = create_access_token({"sub": user.email})
