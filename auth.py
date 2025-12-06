@@ -37,6 +37,8 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    # Flutter tarafı için ekstra alan:
+    username: str
 
 
 class UserOut(BaseModel):
@@ -154,7 +156,13 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         )
 
     token = create_access_token({"sub": user.email})
-    return TokenResponse(access_token=token)
+
+    # BURASI ÖNEMLİ: Login response’a username ekliyoruz
+    return TokenResponse(
+        access_token=token,
+        token_type="bearer",
+        username=user.username,
+    )
 
 
 @router.get("/me", response_model=UserOut)
