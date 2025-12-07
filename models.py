@@ -1,15 +1,19 @@
+from datetime import datetime
 from sqlalchemy import (
     Column,
     Integer,
     String,
     DateTime,
     Text,
+    Boolean,
     ForeignKey,
     func
 )
 from sqlalchemy.orm import relationship
 from database import Base
 
+
+# ===================== USERS =====================
 
 class User(Base):
     __tablename__ = "users"
@@ -23,6 +27,8 @@ class User(Base):
     moods = relationship("Mood", back_populates="user")
 
 
+# ===================== MOOD TRACKING =====================
+
 class Mood(Base):
     __tablename__ = "moods"
 
@@ -33,41 +39,42 @@ class Mood(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="moods")
-# ==================== PERSONALITY TEST MODEL ====================
 
-from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+
+# ===================== PERSONALITY TEST =====================
 
 class PersonalityResponse(Base):
     __tablename__ = "personality_responses"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, nullable=True)  # İstersen ileride JWT'den bağlarız
+    user_id = Column(Integer, nullable=True)
     q1_answer = Column(String, nullable=False)
     q2_answer = Column(String, nullable=False)
     q3_answer = Column(String, nullable=False)
-    q4_answer = Column(String, nullable=False)  # Çoklu seçimler virgülle tutulur
-    created_at = Column(DateTime, default=datetime.utcnow)
+    q4_answer = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-# ==================== CROWDSOURCING SUGGESTION MODEL ====================
+# ===================== CROWDSOURCING SUGGESTIONS =====================
 
 class Suggestion(Base):
     __tablename__ = "suggestions"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, nullable=True)  # anonim olacaksa boş bırakırız
+    user_id = Column(Integer, nullable=True)  # anonim öneriler desteklenir
     text = Column(String(500), nullable=False)
-    is_approved = Column(Boolean, default=True)  # basit tutuyoruz: default onaylı
-    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # HATA ÇIKARTAN KISIM BUNLARDI — DÜZELTTİM
+    is_approved = Column(Boolean, nullable=False, server_default="1")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-# ==================== GAMIFICATION MODEL ====================
+# ===================== GAMIFICATION =====================
 
 class Gamification(Base):
     __tablename__ = "gamification"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False)
-    points = Column(Integer, default=0)
-    badge_level = Column(String, default="Newbie")  # Newbie / Bronze / Silver / Gold
+    points = Column(Integer, nullable=False, server_default="0")
+    badge_level = Column(String, nullable=False, server_default="Newbie")
