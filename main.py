@@ -7,6 +7,8 @@ from chat import router as chat_router
 from personality import router as personality_router
 from suggestions import router as suggestions_router
 from gamification import router as gamification_router
+from stats import router as stats_router
+
 from database import engine
 from models import Base
 
@@ -42,6 +44,7 @@ app.include_router(chat_router)
 app.include_router(personality_router)   # ✅ yeni
 app.include_router(suggestions_router)   # ✅ yeni
 app.include_router(gamification_router)
+app.include_router(stats_router)
 
 # ==================== HEALTH CHECK ====================
 
