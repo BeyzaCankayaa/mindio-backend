@@ -21,7 +21,9 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 bearer_scheme = HTTPBearer()
 
 
-# ---------- SCHEMAS ----------
+# =========================================================
+# ---------------------- SCHEMAS ---------------------------
+# =========================================================
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -37,7 +39,6 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    # Flutter tarafı için ekstra alan:
     username: str
 
 
@@ -47,7 +48,6 @@ class UserOut(BaseModel):
     username: str
 
     class Config:
-        # Pydantic v2 için (eskiden orm_mode)
         from_attributes = True
 
 
@@ -56,7 +56,18 @@ class RegisterResponse(BaseModel):
     user: UserOut
 
 
-# ---------- SECURITY HELPERS ----------
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    reset_token: str
+    new_password: str
+
+
+# =========================================================
+# ------------------ SECURITY HELPERS ---------------------
+# =========================================================
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
@@ -66,9 +77,9 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def create_access_token(data: dict) -> str:
+def create_access_token(data: dict, expires_minutes=ACCESS_TOKEN_EXPIRE_HOURS * 60):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    expire = datetime.utcnow() + timedelta(minutes=expires_minutes)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -107,23 +118,24 @@ def get_current_user(
     return user
 
 
-# ---------- ROUTES ----------
+# =========================================================
+# ------------------------ ROUTES -------------------------
+# =========================================================
 
+# -------- REGISTER --------
 @router.post(
     "/register",
     response_model=RegisterResponse,
     status_code=status.HTTP_201_CREATED,
 )
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
-    # Aynı email var mı?
+
     if get_user_by_email(db, payload.email):
-        # Duplicate email → 409 Conflict
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Email already in use",
         )
 
-    # Aynı username var mı?
     if db.query(User).filter(User.username == payload.username).first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -145,11 +157,11 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     )
 
 
+# -------- LOGIN --------
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = authenticate_user(db, payload.email, payload.password)
     if not user:
-        # Yanlış email/şifre → 401
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -157,7 +169,6 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
     token = create_access_token({"sub": user.email})
 
-    # BURASI ÖNEMLİ: Login response’a username ekliyoruz
     return TokenResponse(
         access_token=token,
         token_type="bearer",
@@ -165,6 +176,47 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     )
 
 
+# -------- ME --------
 @router.get("/me", response_model=UserOut)
 def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+# =========================================================
+# ----------- PASSWORD RESET (FORGOT PASSWORD) ------------
+# =========================================================
+
+# 1) Kullanıcı email girer → reset token üretiriz
+@router.post("/request-password-reset")
+def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(get_db)):
+    user = get_user_by_email(db, payload.email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 15 dakikalık özel reset token
+    reset_token = create_access_token({"sub": payload.email}, expires_minutes=15)
+
+    # Normalde email gönderilir → biz şimdilik geri döndürüyoruz
+    return {
+        "message": "Password reset token generated",
+        "reset_token": reset_token
+    }
+
+
+# 2) Kullanıcı yeni şifreyi belirler
+@router.post("/reset-password")
+def reset_password(payload: PasswordResetConfirm, db: Session = Depends(get_db)):
+    try:
+        decoded = jwt.decode(payload.reset_token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = decoded.get("sub")
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.password_hash = hash_password(payload.new_password)
+    db.commit()
+
+    return {"message": "Password updated successfully"}
