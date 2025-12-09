@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func
 
 from database import get_db
 from models import Suggestion
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/suggestions", tags=["Crowdsourcing"])
 # ---------- SCHEMAS ----------
 
 class SuggestionCreate(BaseModel):
-    # user_id'i opsiyonel bırakalım, ister gönder ister göndermesin
+    # user_id optional: ister gönder, ister boş bırak (anonim)
     user_id: Optional[int] = None
     text: str
 
@@ -27,8 +28,7 @@ class SuggestionDTO(BaseModel):
     text: str
 
     class Config:
-        # Pydantic v2 (eskiden orm_mode = True)
-        from_attributes = True
+        from_attributes = True  # Pydantic v2
 
 
 # ---------- ROUTES ----------
@@ -43,15 +43,14 @@ def create_suggestion(
     db: Session = Depends(get_db),
 ):
     """
-    POST /suggestions
+    POST /suggestions/
 
     Body örneği:
     {
-      "user_id": 1,
-      "text": "Bugün 10 dakika yürüyüş dene."
+      "user_id": 6,
+      "text": "bugün 100 kere gülümse"
     }
     """
-
     text = payload.text.strip()
 
     if not text:
@@ -77,13 +76,40 @@ def create_suggestion(
         db.refresh(suggestion)
     except SQLAlchemyError:
         db.rollback()
-        # Lokalde hata görmen için biraz net mesaj veriyorum
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database error while creating suggestion.",
         )
 
     return suggestion
+
+
+@router.get(
+    "/daily",
+    response_model=SuggestionDTO,
+)
+def get_daily_suggestion(
+    db: Session = Depends(get_db),
+):
+    """
+    GET /suggestions/daily
+
+    Tüm onaylı suggestion’lar arasından RASTGELE bir tanesini döner.
+    """
+    tip = (
+        db.query(Suggestion)
+        .filter(Suggestion.is_approved == True)
+        .order_by(func.random())
+        .first()
+    )
+
+    if not tip:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No suggestions available.",
+        )
+
+    return tip
 
 
 @router.get(
@@ -96,16 +122,7 @@ def list_suggestions(
 ):
     """
     GET /suggestions/{user_id}
-    Örn: /suggestions/1
-
-    Response örneği:
-    [
-      {
-        "id": 5,
-        "user_id": 1,
-        "text": "Bugün 10 dakika yürüyüş dene."
-      }
-    ]
+    Örn: /suggestions/6
     """
 
     suggestions = (
