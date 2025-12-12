@@ -1,15 +1,17 @@
-from datetime import datetime
 from sqlalchemy import (
     Column,
     Integer,
     String,
     DateTime,
+    Date,
     Text,
     Boolean,
     ForeignKey,
-    func
+    func,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
+
 from database import Base
 
 
@@ -22,9 +24,20 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     username = Column(String(50), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
+
+    # Profil ekranı için doğum tarihi
+    birth_date = Column(Date, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     moods = relationship("Mood", back_populates="user")
+    suggestions = relationship("Suggestion", back_populates="user", lazy="selectin")
+    gamification_entries = relationship("Gamification", back_populates="user", lazy="selectin")
+
+    # ✅ Yeni: suggestions etkileşimleri
+    suggestion_reactions = relationship("SuggestionReaction", back_populates="user", lazy="selectin")
+    suggestion_saves = relationship("SuggestionSave", back_populates="user", lazy="selectin")
+    suggestion_comments = relationship("SuggestionComment", back_populates="user", lazy="selectin")
 
 
 # ===================== MOOD TRACKING =====================
@@ -61,12 +74,69 @@ class Suggestion(Base):
     __tablename__ = "suggestions"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, nullable=True)  # anonim öneriler desteklenir
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     text = Column(String(500), nullable=False)
 
-    # HATA ÇIKARTAN KISIM BUNLARDI — DÜZELTTİM
     is_approved = Column(Boolean, nullable=False, server_default="1")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="suggestions")
+
+    # ✅ Yeni: suggestion ilişkileri
+    reactions = relationship("SuggestionReaction", back_populates="suggestion", lazy="selectin")
+    saves = relationship("SuggestionSave", back_populates="suggestion", lazy="selectin")
+    comments = relationship("SuggestionComment", back_populates="suggestion", lazy="selectin")
+
+
+class SuggestionReaction(Base):
+    __tablename__ = "suggestion_reactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    # "like" | "dislike"
+    reaction = Column(String(10), nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("suggestion_id", "user_id", name="uq_reaction_suggestion_user"),
+    )
+
+    user = relationship("User", back_populates="suggestion_reactions")
+    suggestion = relationship("Suggestion", back_populates="reactions")
+
+
+class SuggestionSave(Base):
+    __tablename__ = "suggestion_saves"
+
+    id = Column(Integer, primary_key=True, index=True)
+    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("suggestion_id", "user_id", name="uq_save_suggestion_user"),
+    )
+
+    user = relationship("User", back_populates="suggestion_saves")
+    suggestion = relationship("Suggestion", back_populates="saves")
+
+
+class SuggestionComment(Base):
+    __tablename__ = "suggestion_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    text = Column(String(500), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="suggestion_comments")
+    suggestion = relationship("Suggestion", back_populates="comments")
 
 
 # ===================== GAMIFICATION =====================
@@ -75,6 +145,8 @@ class Gamification(Base):
     __tablename__ = "gamification"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     points = Column(Integer, nullable=False, server_default="0")
     badge_level = Column(String, nullable=False, server_default="Newbie")
+
+    user = relationship("User", back_populates="gamification_entries")
