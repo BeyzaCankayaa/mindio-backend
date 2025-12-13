@@ -1,3 +1,5 @@
+# suggestions.py
+
 from typing import List, Optional, Literal
 from datetime import date
 
@@ -5,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, case
 
 from database import get_db
 from models import (
@@ -13,7 +15,6 @@ from models import (
     SuggestionReaction,
     SuggestionSave,
     SuggestionComment,
-    UserDailySuggestion,
     User,
 )
 from auth import get_current_user
@@ -76,12 +77,46 @@ class SuggestionDailyDTO(BaseModel):
 # ===================== HELPERS =====================
 
 def _validate_text(text: str) -> str:
-    t = text.strip()
+    t = (text or "").strip()
     if not t:
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
     if len(t) > 500:
         raise HTTPException(status_code=400, detail="Text is too long (max 500 chars).")
     return t
+
+
+def _likes_dislikes(db: Session, suggestion_id: int) -> tuple[int, int]:
+    likes = (
+        db.query(func.count(SuggestionReaction.id))
+        .filter(
+            SuggestionReaction.suggestion_id == suggestion_id,
+            SuggestionReaction.reaction == "like",
+        )
+        .scalar()
+        or 0
+    )
+    dislikes = (
+        db.query(func.count(SuggestionReaction.id))
+        .filter(
+            SuggestionReaction.suggestion_id == suggestion_id,
+            SuggestionReaction.reaction == "dislike",
+        )
+        .scalar()
+        or 0
+    )
+    return int(likes), int(dislikes)
+
+
+def _is_saved(db: Session, suggestion_id: int, user_id: int) -> bool:
+    return (
+        db.query(SuggestionSave)
+        .filter(
+            SuggestionSave.suggestion_id == suggestion_id,
+            SuggestionSave.user_id == user_id,
+        )
+        .first()
+        is not None
+    )
 
 
 # ===================== ROUTES =====================
@@ -114,6 +149,42 @@ def create_suggestion(
 
 
 @router.get(
+    "/saved/me",
+    response_model=List[SuggestionDTO],
+)
+def list_my_saved(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    saved_rows = (
+        db.query(SuggestionSave)
+        .filter(SuggestionSave.user_id == current_user.id)
+        .order_by(desc(SuggestionSave.created_at))
+        .limit(100)
+        .all()
+    )
+    if not saved_rows:
+        return []
+
+    suggestion_ids = [r.suggestion_id for r in saved_rows]
+
+    # DB’de sırayı korumak için CASE ile order_by
+    ordering = case(
+        {sid: i for i, sid in enumerate(suggestion_ids)},
+        value=Suggestion.id,
+    )
+
+    suggestions = (
+        db.query(Suggestion)
+        .filter(Suggestion.id.in_(suggestion_ids))
+        .order_by(ordering)
+        .all()
+    )
+
+    return suggestions
+
+
+@router.get(
     "/daily",
     response_model=SuggestionDailyDTO,
 )
@@ -121,105 +192,56 @@ def get_daily_suggestion(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    today = date.today()
+    """
+    DAILY FIXED TIP (global deterministic):
+    - is_approved = True olan öneriler ID ASC
+    - date.today().toordinal() % total ile index
+    - gün içinde herkes aynı tip'i görür, ertesi gün otomatik değişir
+    - user bazlı cache/DB kaydı yok
+    """
 
-    # 1) Bugün için kayıt var mı?
-    existing = (
-        db.query(UserDailySuggestion)
-        .filter(
-            UserDailySuggestion.user_id == current_user.id,
-            UserDailySuggestion.day == today,
-        )
+    total = (
+        db.query(func.count(Suggestion.id))
+        .filter(Suggestion.is_approved.is_(True))
+        .scalar()
+        or 0
+    )
+    if total == 0:
+        raise HTTPException(status_code=404, detail="No suggestions available.")
+
+    idx = date.today().toordinal() % total
+
+    tip = (
+        db.query(Suggestion)
+        .filter(Suggestion.is_approved.is_(True))
+        .order_by(Suggestion.id.asc())
+        .offset(idx)
+        .limit(1)
         .first()
     )
 
-    tip = None
-    if existing:
-        tip = db.query(Suggestion).filter(Suggestion.id == existing.suggestion_id).first()
-        if not tip:
-            # Edge-case: suggestion silinmiş, cache kaydı bozulmuş
-            try:
-                db.delete(existing)
-                db.commit()
-            except SQLAlchemyError:
-                db.rollback()
-            existing = None
-
-    # 2) Yoksa random seç + kaydet
+    # nadir edge-case fallback
     if not tip:
         tip = (
             db.query(Suggestion)
-            .filter(Suggestion.is_approved == True)
-            .order_by(func.random())
+            .filter(Suggestion.is_approved.is_(True))
+            .order_by(Suggestion.id.asc())
             .first()
         )
-        if not tip:
-            raise HTTPException(status_code=404, detail="No suggestions available.")
 
-        record = UserDailySuggestion(
-            user_id=current_user.id,
-            suggestion_id=tip.id,
-            day=today,
-        )
+    if not tip:
+        raise HTTPException(status_code=404, detail="No suggestions available.")
 
-        try:
-            db.add(record)
-            db.commit()
-        except SQLAlchemyError:
-            db.rollback()
-            # Aynı anda iki istek gelirse unique constraint patlayabilir → tekrar çek
-            existing2 = (
-                db.query(UserDailySuggestion)
-                .filter(
-                    UserDailySuggestion.user_id == current_user.id,
-                    UserDailySuggestion.day == today,
-                )
-                .first()
-            )
-            if existing2:
-                tip = db.query(Suggestion).filter(Suggestion.id == existing2.suggestion_id).first()
-
-            if not tip:
-                raise HTTPException(status_code=500, detail="Database error while generating daily suggestion.")
-
-    # 3) Like / dislike sayıları
-    likes = (
-        db.query(func.count(SuggestionReaction.id))
-        .filter(
-            SuggestionReaction.suggestion_id == tip.id,
-            SuggestionReaction.reaction == "like",
-        )
-        .scalar()
-        or 0
-    )
-    dislikes = (
-        db.query(func.count(SuggestionReaction.id))
-        .filter(
-            SuggestionReaction.suggestion_id == tip.id,
-            SuggestionReaction.reaction == "dislike",
-        )
-        .scalar()
-        or 0
-    )
-
-    # 4) Bu user kaydetmiş mi?
-    saved = (
-        db.query(SuggestionSave)
-        .filter(
-            SuggestionSave.suggestion_id == tip.id,
-            SuggestionSave.user_id == current_user.id,
-        )
-        .first()
-        is not None
-    )
+    likes, dislikes = _likes_dislikes(db, tip.id)
+    saved = _is_saved(db, tip.id, current_user.id)
 
     return {
         "id": tip.id,
         "user_id": tip.user_id,
         "text": tip.text,
-        "likes": int(likes),
-        "dislikes": int(dislikes),
-        "is_saved": bool(saved),
+        "likes": likes,
+        "dislikes": dislikes,
+        "is_saved": saved,
     }
 
 
@@ -235,7 +257,7 @@ def list_user_suggestions(
         db.query(Suggestion)
         .filter(
             Suggestion.user_id == user_id,
-            Suggestion.is_approved == True,
+            Suggestion.is_approved.is_(True),
         )
         .order_by(desc(Suggestion.created_at))
         .limit(50)
@@ -375,35 +397,3 @@ def list_comments(
         .all()
     )
     return comments
-
-
-@router.get(
-    "/saved/me",
-    response_model=List[SuggestionDTO],
-)
-def list_my_saved(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    saved_rows = (
-        db.query(SuggestionSave)
-        .filter(SuggestionSave.user_id == current_user.id)
-        .order_by(desc(SuggestionSave.created_at))
-        .limit(100)
-        .all()
-    )
-    if not saved_rows:
-        return []
-
-    suggestion_ids = [r.suggestion_id for r in saved_rows]
-
-    suggestions = (
-        db.query(Suggestion)
-        .filter(Suggestion.id.in_(suggestion_ids))
-        .all()
-    )
-
-    by_id = {s.id: s for s in suggestions}
-    ordered = [by_id[sid] for sid in suggestion_ids if sid in by_id]
-
-    return ordered

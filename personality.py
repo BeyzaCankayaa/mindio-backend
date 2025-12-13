@@ -1,75 +1,55 @@
-# personality.py
+from typing import List, Union
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import SessionLocal
-from models import PersonalityResponse
+from database import get_db
+from models import PersonalityResponse, User
+from auth import get_current_user
 
-router = APIRouter(
-    prefix="/personality",
-    tags=["Personality"]
-)
+router = APIRouter(prefix="/personality", tags=["Personality"])
 
-# ----------------------------
-# 1️⃣ REQUEST SCHEMA
-# Flutter’dan gelen veri
-# ----------------------------
+
 class PersonalityRequest(BaseModel):
-    user_id: int
     q1_answer: str   # yaş aralığı
     q2_answer: str   # cinsiyet
     q3_answer: str   # ruh hali
-    q4_answer: list[str]  # destek konuları (çoklu)
+    q4_answer: Union[List[str], str]  # Flutter bazen string yollayabilir
 
 
-# ----------------------------
-# 2️⃣ RESPONSE SCHEMA
-# DB’den dönen veri
-# ----------------------------
 class PersonalityResponseDTO(BaseModel):
     id: int
     user_id: int
     q1_answer: str
     q2_answer: str
     q3_answer: str
-    q4_answer: str  # DB'de string olarak tutuluyor
+    q4_answer: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
-# ----------------------------
-# 3️⃣ DATABASE CONNECTION
-# ----------------------------
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def _normalize_topics(q4: Union[List[str], str]) -> str:
+    if isinstance(q4, list):
+        items = [x.strip() for x in q4 if str(x).strip()]
+        return ", ".join(items)
+    # string geldiyse:
+    return str(q4).strip()
 
 
-# ----------------------------
-# 4️⃣ SUBMIT ENDPOINT
-# ----------------------------
 @router.post("/submit", response_model=PersonalityResponseDTO)
 def submit_personality(
     payload: PersonalityRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """
-    Kullanıcının kişilik testi cevaplarını alır
-    ve veritabanına kaydeder.
-    """
+    q4_joined = _normalize_topics(payload.q4_answer)
+    if not q4_joined:
+        raise HTTPException(status_code=400, detail="q4_answer cannot be empty")
 
-    # Çoklu cevapları stringe çeviriyoruz
-    q4_joined = ", ".join(payload.q4_answer)
-
-    # DB kaydı oluştur
     record = PersonalityResponse(
-        user_id=payload.user_id,
+        user_id=current_user.id,
         q1_answer=payload.q1_answer,
         q2_answer=payload.q2_answer,
         q3_answer=payload.q3_answer,
@@ -79,5 +59,4 @@ def submit_personality(
     db.add(record)
     db.commit()
     db.refresh(record)
-
     return record
