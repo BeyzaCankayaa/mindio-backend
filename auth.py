@@ -12,17 +12,23 @@ from database import get_db
 from models import User
 from email_utils import send_password_reset_email
 
-
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE_THIS_SECRET")
+# --- Security / Config ---
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 12
+PASSWORD_RESET_EXPIRE_MINUTES = 30
+
+if not SECRET_KEY or SECRET_KEY == "CHANGE_THIS_SECRET":
+    # Prod’da yanlışlıkla default secret ile çalışmasın
+    raise RuntimeError("SECRET_KEY environment variable is missing or insecure.")
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 bearer_scheme = HTTPBearer()
 
 
+# --- Schemas ---
 class RegisterRequest(BaseModel):
     email: EmailStr
     username: str
@@ -63,6 +69,11 @@ class PasswordResetConfirm(BaseModel):
     new_password: str
 
 
+# --- Helpers ---
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -80,13 +91,14 @@ def create_access_token(data: dict, expires_minutes: int | None = None) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_user_by_email(db: Session, email: str):
+def get_user_by_email(db: Session, email: str) -> User | None:
+    email = normalize_email(email)
     return db.query(User).filter(User.email == email).first()
 
 
-def authenticate_user(db: Session, email: str, password: str):
+def authenticate_user(db: Session, email: str, password: str) -> User | None:
     user = get_user_by_email(db, email)
-    if not user:
+    if not user or not user.password_hash:
         return None
     if not verify_password(password, user.password_hash):
         return None
@@ -96,14 +108,15 @@ def authenticate_user(db: Session, email: str, password: str):
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
-):
+) -> User:
     token = credentials.credentials
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email = payload.get("sub")
-        if email is None:
+        if not email:
             raise HTTPException(status_code=401, detail="Invalid token payload")
+        email = normalize_email(email)
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
@@ -120,7 +133,7 @@ def verify_password_reset_token(token: str, db: Session) -> User:
         token_type = payload.get("type")
         email = payload.get("sub")
 
-        if token_type != "password_reset" or email is None:
+        if token_type != "password_reset" or not email:
             raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
         user = get_user_by_email(db, email)
@@ -134,13 +147,12 @@ def verify_password_reset_token(token: str, db: Session) -> User:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
 
-@router.post(
-    "/register",
-    response_model=RegisterResponse,
-    status_code=status.HTTP_201_CREATED,
-)
+# --- Routes ---
+@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
-    if get_user_by_email(db, payload.email):
+    email = normalize_email(payload.email)
+
+    if get_user_by_email(db, email):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Email already in use",
@@ -148,12 +160,12 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 
     if db.query(User).filter(User.username == payload.username).first():
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Username already in use",
         )
 
     user = User(
-        email=payload.email,
+        email=email,
         username=payload.username,
         password_hash=hash_password(payload.password),
     )
@@ -169,7 +181,9 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = authenticate_user(db, payload.email, payload.password)
+    email = normalize_email(payload.email)
+    user = authenticate_user(db, email, payload.password)
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -191,35 +205,33 @@ def me(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/request-password-reset")
-def request_password_reset(
-    payload: PasswordResetRequest,
-    db: Session = Depends(get_db),
-):
-    user = get_user_by_email(db, payload.email)
+def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(get_db)):
+    email = normalize_email(payload.email)
+    user = get_user_by_email(db, email)
+
+    # User enumeration engeli (aynı mesaj)
     if not user:
         return {"message": "If this email exists, a reset email has been sent."}
 
-    reset_token = create_access_token({"sub": user.email, "type": "password_reset"})
+    reset_token = create_access_token(
+        {"sub": user.email, "type": "password_reset"},
+        expires_minutes=PASSWORD_RESET_EXPIRE_MINUTES,
+    )
 
     try:
         send_password_reset_email(user.email, reset_token)
-        return {
-            "message": "Password reset email sent.",
-            "reset_token": reset_token,  # DEV ONLY
-        }
+        return {"message": "Password reset email sent."}
     except Exception as e:
         print("EMAIL ERROR:", e)
+        # DEV ortamı için istersen reset_token döndür — prod’da döndürme
         return {
-            "message": "Failed to send email, but here is the reset token (DEV ONLY).",
+            "message": "Failed to send email. (DEV) Returning reset token.",
             "reset_token": reset_token,
         }
 
 
 @router.post("/reset-password")
-def reset_password(
-    payload: PasswordResetConfirm,
-    db: Session = Depends(get_db),
-):
+def reset_password(payload: PasswordResetConfirm, db: Session = Depends(get_db)):
     user = verify_password_reset_token(payload.reset_token, db)
     user.password_hash = hash_password(payload.new_password)
     db.commit()
