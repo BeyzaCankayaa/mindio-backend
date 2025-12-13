@@ -1,4 +1,5 @@
 import os
+import asyncio
 import httpx
 from dotenv import load_dotenv
 
@@ -32,49 +33,93 @@ async def generate_response(
     if not AI_WEBHOOK_URL:
         raise AIClientError("AI_WEBHOOK_URL tanımlı değil (Render env).")
 
-    payload = {"message": message, "history": history or []}
+    payload = {
+        "message": message,
+        "history": history or [],
+    }
     if user_context:
         payload["userContext"] = user_context
 
     headers = {
-        "Content-Type": "application/json",
         "Accept": "application/json",
+        "Content-Type": "application/json",
         "User-Agent": "mindio-backend/1.0",
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            res = await client.post(AI_WEBHOOK_URL, json=payload, headers=headers)
+    # Render + n8n bazen 1-2 istekte boş dönebiliyor => retry
+    max_attempts = 3
+    backoff_seconds = 1.2
 
-        # Debug için: status + content-length bilgisini hataya göm
-        cl = res.headers.get("content-length", "unknown")
+    timeout = httpx.Timeout(
+        connect=10.0,
+        read=120.0,   # LLM/n8n gecikirse burada patlamasın
+        write=30.0,
+        pool=10.0,
+    )
 
-        # 3xx gelirse burada yakala (redirect takip etse bile yine kontrol)
-        if res.status_code >= 300:
-            raise AIClientError(f"AI webhook HTTP {res.status_code} (content-length={cl}) url={AI_WEBHOOK_URL}")
+    last_err: Exception | None = None
 
-        if res.status_code >= 400:
-            raise AIClientError(f"AI webhook HTTP {res.status_code} (content-length={cl}): {res.text}")
-
-        raw = (res.text or "").strip()
-        if not raw:
-            raise AIClientError(
-                f"AI webhook boş cevap dönüyor (HTTP {res.status_code}, content-length={cl}). "
-                f"URL={AI_WEBHOOK_URL} | n8n sonunda Respond to Webhook JSON dönmeli."
-            )
-
+    for attempt in range(1, max_attempts + 1):
         try:
-            data = res.json()
-        except Exception:
-            raise AIClientError(f"AI webhook JSON dönmüyor. HTTP {res.status_code}, content-length={cl}, raw={raw[:300]}")
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                res = await client.post(AI_WEBHOOK_URL, json=payload, headers=headers)
 
-        reply = (data.get("reply") or "").strip()
-        if not reply:
-            raise AIClientError(f"AI response içinde 'reply' yok/boş. HTTP {res.status_code}, JSON={data}")
+            # ÖNEMLİ: header değil gerçek body ölç
+            body_bytes = res.content or b""
+            body_len = len(body_bytes)
 
-        return reply
+            # HTTP hata
+            if res.status_code >= 400:
+                raise AIClientError(
+                    f"AI webhook HTTP {res.status_code} (body_len={body_len}) url={AI_WEBHOOK_URL} "
+                    f"resp={body_bytes[:300]!r}"
+                )
 
-    except AIClientError:
-        raise
-    except Exception as e:
-        raise AIClientError(f"AI sunucusuna bağlanırken hata: {str(e)}")
+            # Boş body (asıl problem)
+            if body_len == 0:
+                raise AIClientError(
+                    f"AI webhook boş cevap dönüyor (HTTP {res.status_code}, body_len=0). "
+                    f"URL={AI_WEBHOOK_URL} | n8n sonunda Respond to Webhook JSON dönmeli."
+                )
+
+            # Decode
+            raw = body_bytes.decode("utf-8", errors="replace").strip()
+            if not raw:
+                raise AIClientError(
+                    f"AI webhook raw boş (HTTP {res.status_code}, body_len={body_len}). "
+                    f"raw_preview={body_bytes[:80]!r}"
+                )
+
+            # JSON parse
+            try:
+                data = res.json()
+            except Exception:
+                raise AIClientError(
+                    f"AI webhook JSON dönmüyor. HTTP {res.status_code}, body_len={body_len}, raw={raw[:300]}"
+                )
+
+            reply = (data.get("reply") or "").strip()
+            if not reply:
+                raise AIClientError(
+                    f"AI response içinde 'reply' yok/boş. HTTP {res.status_code}, body_len={body_len}, JSON={data}"
+                )
+
+            return reply
+
+        except (AIClientError, httpx.HTTPError, asyncio.TimeoutError) as e:
+            last_err = e
+
+            # son deneme değilse retry
+            if attempt < max_attempts:
+                await asyncio.sleep(backoff_seconds * attempt)
+                continue
+
+            # son denemede patlat
+            raise AIClientError(f"AI çağrısı başarısız (attempt={attempt}/{max_attempts}): {str(e)}") from e
+
+        except Exception as e:
+            # beklenmeyen
+            raise AIClientError(f"AI sunucusuna bağlanırken beklenmeyen hata: {str(e)}") from e
+
+    # teorik olarak buraya düşmez
+    raise AIClientError(f"AI çağrısı başarısız: {str(last_err)}")
