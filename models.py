@@ -26,7 +26,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
 
     # Profil ekranı için doğum tarihi
-    birth_date = Column(Date, nullable=True)
+   # birth_date = Column(Date, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
