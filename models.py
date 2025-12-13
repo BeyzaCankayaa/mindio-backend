@@ -1,3 +1,5 @@
+from datetime import date
+
 from sqlalchemy import (
     Column,
     Integer,
@@ -25,8 +27,8 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
 
-    # Profil ekranı için doğum tarihi
-   # birth_date = Column(Date, nullable=True)
+    # Profil ekranı için doğum tarihi (şimdilik kapalı)
+    # birth_date = Column(Date, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -137,6 +139,24 @@ class SuggestionComment(Base):
 
     user = relationship("User", back_populates="suggestion_comments")
     suggestion = relationship("Suggestion", back_populates="comments")
+
+
+# ===================== DAILY SUGGESTION (PER USER PER DAY) =====================
+
+class UserDailySuggestion(Base):
+    __tablename__ = "user_daily_suggestions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
+    day = Column(Date, nullable=False, default=date.today, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "day", name="uq_user_daily_suggestion"),
+    )
+
+    user = relationship("User")
+    suggestion = relationship("Suggestion")
 
 
 # ===================== GAMIFICATION =====================

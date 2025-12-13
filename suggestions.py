@@ -1,4 +1,5 @@
 from typing import List, Optional, Literal
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
@@ -12,6 +13,7 @@ from models import (
     SuggestionReaction,
     SuggestionSave,
     SuggestionComment,
+    UserDailySuggestion,
     User,
 )
 from auth import get_current_user
@@ -119,15 +121,68 @@ def get_daily_suggestion(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    tip = (
-        db.query(Suggestion)
-        .filter(Suggestion.is_approved == True)
-        .order_by(func.random())
+    today = date.today()
+
+    # 1) Bugün için kayıt var mı?
+    existing = (
+        db.query(UserDailySuggestion)
+        .filter(
+            UserDailySuggestion.user_id == current_user.id,
+            UserDailySuggestion.day == today,
+        )
         .first()
     )
-    if not tip:
-        raise HTTPException(status_code=404, detail="No suggestions available.")
 
+    tip = None
+    if existing:
+        tip = db.query(Suggestion).filter(Suggestion.id == existing.suggestion_id).first()
+        if not tip:
+            # Edge-case: suggestion silinmiş, cache kaydı bozulmuş
+            try:
+                db.delete(existing)
+                db.commit()
+            except SQLAlchemyError:
+                db.rollback()
+            existing = None
+
+    # 2) Yoksa random seç + kaydet
+    if not tip:
+        tip = (
+            db.query(Suggestion)
+            .filter(Suggestion.is_approved == True)
+            .order_by(func.random())
+            .first()
+        )
+        if not tip:
+            raise HTTPException(status_code=404, detail="No suggestions available.")
+
+        record = UserDailySuggestion(
+            user_id=current_user.id,
+            suggestion_id=tip.id,
+            day=today,
+        )
+
+        try:
+            db.add(record)
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            # Aynı anda iki istek gelirse unique constraint patlayabilir → tekrar çek
+            existing2 = (
+                db.query(UserDailySuggestion)
+                .filter(
+                    UserDailySuggestion.user_id == current_user.id,
+                    UserDailySuggestion.day == today,
+                )
+                .first()
+            )
+            if existing2:
+                tip = db.query(Suggestion).filter(Suggestion.id == existing2.suggestion_id).first()
+
+            if not tip:
+                raise HTTPException(status_code=500, detail="Database error while generating daily suggestion.")
+
+    # 3) Like / dislike sayıları
     likes = (
         db.query(func.count(SuggestionReaction.id))
         .filter(
@@ -147,6 +202,7 @@ def get_daily_suggestion(
         or 0
     )
 
+    # 4) Bu user kaydetmiş mi?
     saved = (
         db.query(SuggestionSave)
         .filter(
