@@ -1,6 +1,7 @@
 # chat.py
 from __future__ import annotations
 
+import os
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, status
@@ -35,7 +36,6 @@ def build_profile_context(personality: Optional[PersonalityResponse]) -> str:
     AI'ye gönderilecek userContext metni.
     Personality yoksa da stabil bir fallback context üretir.
     """
-    # Ortak talimat bloğu (her durumda)
     instruction = (
         "INSTRUCTION:\n"
         "- Speak Turkish.\n"
@@ -55,9 +55,7 @@ def build_profile_context(personality: Optional[PersonalityResponse]) -> str:
             + instruction
         )
 
-    topics = (personality.q4_answer or "").strip()
-    if not topics:
-        topics = "General wellbeing"
+    topics = (personality.q4_answer or "").strip() or "General wellbeing"
 
     return (
         "USER PROFILE:\n"
@@ -65,56 +63,38 @@ def build_profile_context(personality: Optional[PersonalityResponse]) -> str:
         f"- Gender: {personality.q2_answer}\n"
         f"- CurrentMood: {personality.q3_answer}\n"
         f"- SupportTopics: {topics}\n\n"
-        + instruction +
-        "EXTRA:\n"
-        "- Match tone to CurrentMood (stressed/sad -> calming, grounding).\n"
-        "- Use SupportTopics to prioritize suggestions.\n"
+        + instruction
+        + "EXTRA:\n"
+          "- Match tone to CurrentMood (stressed/sad -> calming, grounding).\n"
+          "- Use SupportTopics to prioritize suggestions.\n"
     )
 
 
 def _normalize_history(history: Optional[List[Any]]) -> List[Any]:
-    """
-    history None/garip tip gelirse crash olmasın diye normalize eder.
-    """
-    if history is None:
-        return []
     if isinstance(history, list):
         return history
     return []
 
 
-def _validate_reply(reply: Any) -> str:
+def _safe_reply_or_fallback(raw: Any) -> str:
     """
-    AI'den gelen reply'ı güvenli hale getirir.
+    n8n/AI bazen boş dönebiliyor. Burada crash etme -> fallback dön.
     """
-    if reply is None:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="AI boş cevap döndü (reply=None).",
-        )
+    if raw is None:
+        return "Şu an cevap üretemedim. Bir daha dener misin?"
 
-    # bazı client'lar dict döndürebilir: {"reply": "..."} gibi
-    if isinstance(reply, dict):
-        val = reply.get("reply") or reply.get("text") or reply.get("message")
+    if isinstance(raw, dict):
+        val = raw.get("reply") or raw.get("text") or raw.get("message")
         if isinstance(val, str) and val.strip():
             return val.strip()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="AI beklenen formatta dönmedi (dict içinde reply/text yok).",
-        )
+        return "Şu an cevap üretemedim. Bir daha dener misin?"
 
-    if isinstance(reply, str):
-        if not reply.strip():
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="AI boş string döndü (reply='').",
-            )
-        return reply.strip()
+    if isinstance(raw, str):
+        if raw.strip():
+            return raw.strip()
+        return "Şu an cevap üretemedim. Bir daha dener misin?"
 
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail=f"AI beklenmeyen tip döndü: {type(reply)}",
-    )
+    return "Şu an cevap üretemedim. Bir daha dener misin?"
 
 
 # ===================== ROUTE =====================
@@ -125,7 +105,6 @@ async def chat_with_ai(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # basic input check
     msg = (payload.message or "").strip()
     if not msg:
         raise HTTPException(
@@ -133,7 +112,9 @@ async def chat_with_ai(
             detail="Message cannot be empty.",
         )
 
-    # personality: en son kaydı çek
+    # DEBUG: Render log'da hangi webhook'a gittiğini gör
+    print("AI_WEBHOOK_URL =", os.getenv("AI_WEBHOOK_URL"))
+
     personality = (
         db.query(PersonalityResponse)
         .filter(PersonalityResponse.user_id == current_user.id)
@@ -145,30 +126,21 @@ async def chat_with_ai(
     history = _normalize_history(payload.history)
 
     try:
-        # ai_client.generate_response bu imzayla çalışıyor varsayımı:
-        # await generate_response(message=..., history=[...], user_context="...")
         raw_reply = await generate_response(
             message=msg,
             history=history,
             user_context=profile_context,
         )
-
-        safe_reply = _validate_reply(raw_reply)
-        return ChatResponse(reply=safe_reply)
+        return ChatResponse(reply=_safe_reply_or_fallback(raw_reply))
 
     except AIClientError as e:
-        # AI client kendi hatası (timeout, empty body vs.)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"AIClientError: {str(e)}",
-        )
-
-    except HTTPException:
-        # yukarıdaki _validate_reply gibi yerlerden gelen kontrollü hatalar
-        raise
+        # burada 502 fırlatmak yerine fallback dönüyoruz (UX kurtar)
+        # ama log'a yaz ki takip edelim
+        print("AIClientError:", str(e))
+        return ChatResponse(reply="Şu an cevap üretemedim. Bir daha dener misin?")
 
     except Exception as e:
-        # beklenmeyen
+        print("Unexpected error in /ai/chat:", str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Beklenmeyen hata: {str(e)}",
