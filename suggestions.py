@@ -1,6 +1,6 @@
 # suggestions.py
 
-from typing import List, Optional, Literal
+from typing import Any, List, Optional, Literal
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Depends, status
@@ -25,7 +25,6 @@ router = APIRouter(prefix="/suggestions", tags=["Crowdsourcing"])
 # ===================== SCHEMAS =====================
 
 class SuggestionCreate(BaseModel):
-    user_id: Optional[int] = None
     text: str
 
 
@@ -129,11 +128,17 @@ def _is_saved(db: Session, suggestion_id: int, user_id: int) -> bool:
 def create_suggestion(
     payload: SuggestionCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),  # ✅ AUTH ZORUNLU
 ):
+    """
+    ✅ Yeni öneri ekleme:
+    - Token zorunlu
+    - user_id otomatik current_user.id
+    """
     text = _validate_text(payload.text)
 
     suggestion = Suggestion(
-        user_id=payload.user_id,
+        user_id=current_user.id,  # ✅ FIX: artık null gitmez
         text=text,
     )
 
@@ -146,42 +151,6 @@ def create_suggestion(
         raise HTTPException(status_code=500, detail="Database error while creating suggestion.")
 
     return suggestion
-
-
-@router.get(
-    "/saved/me",
-    response_model=List[SuggestionDTO],
-)
-def list_my_saved(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    saved_rows = (
-        db.query(SuggestionSave)
-        .filter(SuggestionSave.user_id == current_user.id)
-        .order_by(desc(SuggestionSave.created_at))
-        .limit(100)
-        .all()
-    )
-    if not saved_rows:
-        return []
-
-    suggestion_ids = [r.suggestion_id for r in saved_rows]
-
-    # DB’de sırayı korumak için CASE ile order_by
-    ordering = case(
-        {sid: i for i, sid in enumerate(suggestion_ids)},
-        value=Suggestion.id,
-    )
-
-    suggestions = (
-        db.query(Suggestion)
-        .filter(Suggestion.id.in_(suggestion_ids))
-        .order_by(ordering)
-        .all()
-    )
-
-    return suggestions
 
 
 @router.get(
@@ -220,7 +189,6 @@ def get_daily_suggestion(
         .first()
     )
 
-    # nadir edge-case fallback
     if not tip:
         tip = (
             db.query(Suggestion)
@@ -246,6 +214,40 @@ def get_daily_suggestion(
 
 
 @router.get(
+    "/saved/me",
+    response_model=List[SuggestionDTO],
+)
+def list_my_saved(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    saved_rows = (
+        db.query(SuggestionSave)
+        .filter(SuggestionSave.user_id == current_user.id)
+        .order_by(desc(SuggestionSave.created_at))
+        .limit(100)
+        .all()
+    )
+    if not saved_rows:
+        return []
+
+    suggestion_ids = [r.suggestion_id for r in saved_rows]
+
+    ordering = case(
+        {sid: i for i, sid in enumerate(suggestion_ids)},
+        value=Suggestion.id,
+    )
+
+    suggestions = (
+        db.query(Suggestion)
+        .filter(Suggestion.id.in_(suggestion_ids))
+        .order_by(ordering)
+        .all()
+    )
+    return suggestions
+
+
+@router.get(
     "/{user_id}",
     response_model=List[SuggestionDTO],
 )
@@ -253,6 +255,9 @@ def list_user_suggestions(
     user_id: int,
     db: Session = Depends(get_db),
 ):
+    """
+    Belirli kullanıcının onaylı önerileri
+    """
     suggestions = (
         db.query(Suggestion)
         .filter(
