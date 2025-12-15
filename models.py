@@ -182,3 +182,34 @@ class Gamification(Base):
     badge_level = Column(String, nullable=False, server_default="Newbie")
 
     user = relationship("User", back_populates="gamification_entries", lazy="selectin")
+# ===================== CHARACTERS (SHOP + USER OWNERSHIP) =====================
+
+class Character(Base):
+    __tablename__ = "characters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(80), nullable=False)
+    asset_key = Column(String(50), unique=True, nullable=False, index=True)
+    cost = Column(Integer, nullable=False, server_default="0")
+    is_active = Column(Boolean, nullable=False, server_default="1")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    owners = relationship("UserCharacter", back_populates="character", lazy="selectin")
+
+
+class UserCharacter(Base):
+    __tablename__ = "user_characters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    character_id = Column(Integer, ForeignKey("characters.id"), nullable=False, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "character_id", name="uq_user_character"),
+    )
+
+    user = relationship("User", lazy="selectin")
+    character = relationship("Character", back_populates="owners", lazy="selectin")
