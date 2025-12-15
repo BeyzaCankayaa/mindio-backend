@@ -174,6 +174,10 @@ async def _generate_ai_suggestion_and_save(db: Session, current_user: User) -> S
         "Kısa olsun (1-2 cümle)."
     )
 
+    # ✅ KANIT LOG (AI'ye giden payload)
+    print("🚀 AI REQUEST PAYLOAD:")
+    print({"message": prompt, "history": [], "userContext": user_context})
+
     try:
         reply = await generate_response(
             message=prompt,
