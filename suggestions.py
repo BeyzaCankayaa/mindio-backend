@@ -190,6 +190,9 @@ async def _generate_ai_suggestion_and_save(db: Session, current_user: User) -> S
             detail=f"AIClientError: {str(e)}",
         )
 
+    # ✅ Reply preview (Render log)
+    print("✅ AI RAW REPLY (preview):", (reply or "")[:200])
+
     text = _validate_text(reply)
 
     suggestion = Suggestion(
@@ -295,9 +298,20 @@ async def generate_daily_ai_suggestion(
     """
     Kullanıcıya özel AI önerisi üretir ve DB'ye kaydeder.
     Not: daily endpointi zaten gerekirse bunu çağırıyor.
+
+    ✅ REVİZE:
+    - AI patlarsa 502 fırlatıp mobilde "sunucu hatası" yerine
+      fallback global tip döndürür (UX kurtarır).
     """
-    suggestion = await _generate_ai_suggestion_and_save(db, current_user)
-    return suggestion
+    try:
+        suggestion = await _generate_ai_suggestion_and_save(db, current_user)
+        return suggestion
+    except HTTPException as e:
+        # AI fail (502) veya başka HTTPException -> fallback
+        if e.status_code == status.HTTP_502_BAD_GATEWAY:
+            tip = _get_global_daily_tip(db)
+            return tip
+        raise
 
 
 @router.get(
@@ -314,6 +328,9 @@ async def get_daily_suggestion(
     2) Varsa onu döndür
     3) Yoksa AI ile üret -> suggestions'a kaydet -> user_daily_suggestions'a (user, day) mapping ekle -> döndür
     4) AI patlarsa fallback: global deterministic tip döndür (eski davranış)
+
+    ✅ REVİZE:
+    - mapping var ama suggestion bulunamazsa (deleted/None) mapping'i temizle ve yeniden üret.
     """
 
     today = date.today()
@@ -331,6 +348,15 @@ async def get_daily_suggestion(
 
     if mapping:
         tip = db.query(Suggestion).filter(Suggestion.id == mapping.suggestion_id).first()
+
+        # ✅ Edge-case: mapping var ama suggestion yok (silinmiş vb.)
+        if tip is None:
+            try:
+                db.delete(mapping)
+                db.commit()
+            except SQLAlchemyError:
+                db.rollback()
+            mapping = None
 
     if not tip:
         # mapping yoksa: AI üretmeyi dene
