@@ -5,6 +5,15 @@ from dotenv import load_dotenv
 # ==================== LOAD ENV ====================
 load_dotenv()
 
+# ==================== DATABASE INIT ====================
+from database import engine, SessionLocal
+from models import Base
+
+Base.metadata.create_all(bind=engine)
+
+# ==================== SEED ====================
+from seed_characters import seed_characters_if_empty
+
 # ==================== ROUTER IMPORTS ====================
 from auth import router as auth_router
 from mood import router as mood_router
@@ -16,13 +25,6 @@ from stats import router as stats_router
 from user_profile import router as user_router
 from character import router as characters_router
 from user_character import router as user_characters_router
-
-
-# ==================== DATABASE INIT ====================
-from database import engine
-from models import Base
-
-Base.metadata.create_all(bind=engine)
 
 # ==================== APP CONFIG ====================
 app = FastAPI(
@@ -42,6 +44,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ==================== STARTUP (SEED) ====================
+@app.on_event("startup")
+def _seed_characters():
+    db = SessionLocal()
+    try:
+        seed_characters_if_empty(db)
+    finally:
+        db.close()
+
 # ==================== ROUTERS ====================
 app.include_router(auth_router)
 app.include_router(mood_router)
@@ -53,10 +64,8 @@ app.include_router(stats_router)
 app.include_router(user_router)
 app.include_router(characters_router)
 app.include_router(user_characters_router)
+
 # ==================== HEALTH CHECK ====================
 @app.get("/", tags=["Health"])
 def health_check():
-    return {
-        "status": "ok",
-        "message": "Mindio backend is running"
-    }
+    return {"status": "ok", "message": "Mindio backend is running"}
