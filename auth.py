@@ -21,7 +21,6 @@ ACCESS_TOKEN_EXPIRE_HOURS = 12
 PASSWORD_RESET_EXPIRE_MINUTES = 30
 
 if not SECRET_KEY or SECRET_KEY == "CHANGE_THIS_SECRET":
-    # Prod’da yanlışlıkla default secret ile çalışmasın
     raise RuntimeError("SECRET_KEY environment variable is missing or insecure.")
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
@@ -43,7 +42,9 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    user_id: int              # ✅ NEW: Flutter bunu kullanacak
     username: str
+    needs_onboarding: bool    # ✅ Flutter buna bakacak
 
 
 class UserOut(BaseModel):
@@ -69,6 +70,11 @@ class PasswordResetConfirm(BaseModel):
     new_password: str
 
 
+class OnboardingCompleteResponse(BaseModel):
+    message: str
+    onboarding_completed: bool
+
+
 # --- Helpers ---
 def normalize_email(email: str) -> str:
     return email.strip().lower()
@@ -83,6 +89,11 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(data: dict, expires_minutes: int | None = None) -> str:
+    """
+    Access token:
+      - sub: email (backward compatible)
+      - user_id: int (NEW)
+    """
     to_encode = data.copy()
     if expires_minutes is None:
         expires_minutes = ACCESS_TOKEN_EXPIRE_HOURS * 60
@@ -94,6 +105,10 @@ def create_access_token(data: dict, expires_minutes: int | None = None) -> str:
 def get_user_by_email(db: Session, email: str) -> User | None:
     email = normalize_email(email)
     return db.query(User).filter(User.email == email).first()
+
+
+def get_user_by_id(db: Session, user_id: int) -> User | None:
+    return db.query(User).filter(User.id == int(user_id)).first()
 
 
 def authenticate_user(db: Session, email: str, password: str) -> User | None:
@@ -109,14 +124,29 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
+    """
+    ✅ NEW: Token payload'dan önce user_id ile bulur.
+    ✅ Fallback: sub(email) ile bulur (eski tokenlar bozulmasın).
+    """
     token = credentials.credentials
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+
+        # 1) NEW yolu: user_id
+        user_id = payload.get("user_id")
+        if user_id is not None:
+            user = get_user_by_id(db, int(user_id))
+            if user:
+                return user
+
+        # 2) Fallback: sub(email) (backward compatible)
         email = payload.get("sub")
         if not email:
             raise HTTPException(status_code=401, detail="Invalid token payload")
+
         email = normalize_email(email)
+
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
@@ -128,6 +158,11 @@ def get_current_user(
 
 
 def verify_password_reset_token(token: str, db: Session) -> User:
+    """
+    Password reset token:
+      - sub: email
+      - type: password_reset
+    """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         token_type = payload.get("type")
@@ -145,6 +180,11 @@ def verify_password_reset_token(token: str, db: Session) -> User:
     except JWTError as e:
         print("JWT ERROR while verifying reset token:", e)
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+
+def get_onboarding_completed(user: User) -> bool:
+    # Backward compatible: kolon yoksa patlamasın
+    return bool(getattr(user, "onboarding_completed", False))
 
 
 # --- Routes ---
@@ -169,6 +209,13 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         username=payload.username,
         password_hash=hash_password(payload.password),
     )
+
+    # onboarding default False
+    try:
+        user.onboarding_completed = False
+    except Exception:
+        setattr(user, "onboarding_completed", False)
+
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -190,12 +237,18 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
             detail="Invalid email or password",
         )
 
-    token = create_access_token({"sub": user.email})
+    # ✅ NEW: access token artık user_id içeriyor
+    token = create_access_token({"sub": user.email, "user_id": user.id})
+
+    onboarding_completed = get_onboarding_completed(user)
+    needs_onboarding = not onboarding_completed
 
     return TokenResponse(
         access_token=token,
         token_type="bearer",
+        user_id=user.id,                 # ✅ NEW: Flutter bunu saklayacak
         username=user.username,
+        needs_onboarding=needs_onboarding,
     )
 
 
@@ -204,12 +257,33 @@ def me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+@router.post("/onboarding/complete", response_model=OnboardingCompleteResponse)
+def complete_onboarding(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not get_onboarding_completed(current_user):
+        try:
+            current_user.onboarding_completed = True
+        except Exception:
+            setattr(current_user, "onboarding_completed", True)
+
+        db.add(current_user)
+        db.commit()
+        db.refresh(current_user)
+
+    return OnboardingCompleteResponse(
+        message="Onboarding marked as completed.",
+        onboarding_completed=True,
+    )
+
+
 @router.post("/request-password-reset")
 def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(get_db)):
     email = normalize_email(payload.email)
     user = get_user_by_email(db, email)
 
-    # User enumeration engeli (aynı mesaj)
+    # User enumeration engeli
     if not user:
         return {"message": "If this email exists, a reset email has been sent."}
 
@@ -223,7 +297,7 @@ def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(
         return {"message": "Password reset email sent."}
     except Exception as e:
         print("EMAIL ERROR:", e)
-        # DEV ortamı için istersen reset_token döndür — prod’da döndürme
+        # DEV için token döndürme (prod'da kapat)
         return {
             "message": "Failed to send email. (DEV) Returning reset token.",
             "reset_token": reset_token,
