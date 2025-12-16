@@ -25,18 +25,50 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
 
+    # ✅ FIX: user_profile.py bunu kullanıyor
+    birth_date = Column(Date, nullable=True)
+
     onboarding_completed = Column(Boolean, nullable=False, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    # Relations
     moods = relationship("Mood", back_populates="user", lazy="selectin")
     suggestions = relationship("Suggestion", back_populates="user", lazy="selectin")
     gamification_entries = relationship("Gamification", back_populates="user", lazy="selectin")
 
     suggestion_reactions = relationship("SuggestionReaction", back_populates="user", lazy="selectin")
     suggestion_saves = relationship("SuggestionSave", back_populates="user", lazy="selectin")
+
+    # ✅ FIX: comments tablosu var ama User'da relation yoktu → crash/orm warning çıkarır
     suggestion_comments = relationship("SuggestionComment", back_populates="user", lazy="selectin")
 
     daily_suggestions = relationship("UserDailySuggestion", back_populates="user", lazy="selectin")
+
+    # ✅ NEW: AI için kalıcı profil
+    profiles = relationship("UserProfile", back_populates="user", lazy="selectin")
+
+
+class UserProfile(Base):
+    """
+    ✅ NEW TABLE: AI context için kalıcı ve güvenilir profil datası.
+    Personality test sonuçları buraya yazılacak.
+    """
+    __tablename__ = "user_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    # Personality test / onboarding alanları
+    age_range = Column(String(50), nullable=True)
+    gender = Column(String(50), nullable=True)
+    mood = Column(String(50), nullable=True)
+    support_topics = Column(String(255), nullable=True)
+    location = Column(String(100), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="profiles", lazy="selectin")
 
 
 class Mood(Base):
@@ -52,6 +84,10 @@ class Mood(Base):
 
 
 class PersonalityResponse(Base):
+    """
+    Backward-compat / history amaçlı tutulabilir.
+    Asıl kalıcı veri UserProfile.
+    """
     __tablename__ = "personality_responses"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -81,8 +117,6 @@ class Suggestion(Base):
 
     reactions = relationship("SuggestionReaction", back_populates="suggestion", lazy="selectin")
     saves = relationship("SuggestionSave", back_populates="suggestion", lazy="selectin")
-
-    # ✅ FIX: back_populates yanlışmış
     comments = relationship("SuggestionComment", back_populates="suggestion", lazy="selectin")
 
     daily_used_by = relationship("UserDailySuggestion", back_populates="suggestion", lazy="selectin")
@@ -153,7 +187,6 @@ class UserDailySuggestion(Base):
     suggestion = relationship("Suggestion", back_populates="daily_used_by", lazy="selectin")
 
 
-# ✅ NEW: GLOBAL DAILY (one per day)
 class GlobalDailySuggestion(Base):
     __tablename__ = "global_daily_suggestions"
 

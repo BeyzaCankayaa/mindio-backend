@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -14,7 +15,6 @@ from email_utils import send_password_reset_email
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-# --- Security / Config ---
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 12
@@ -27,7 +27,6 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 bearer_scheme = HTTPBearer()
 
 
-# --- Schemas ---
 class RegisterRequest(BaseModel):
     email: EmailStr
     username: str
@@ -42,9 +41,9 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    user_id: int              # ✅ NEW: Flutter bunu kullanacak
+    user_id: int
     username: str
-    needs_onboarding: bool    # ✅ Flutter buna bakacak
+    needs_onboarding: bool
 
 
 class UserOut(BaseModel):
@@ -75,7 +74,6 @@ class OnboardingCompleteResponse(BaseModel):
     onboarding_completed: bool
 
 
-# --- Helpers ---
 def normalize_email(email: str) -> str:
     return email.strip().lower()
 
@@ -88,12 +86,7 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def create_access_token(data: dict, expires_minutes: int | None = None) -> str:
-    """
-    Access token:
-      - sub: email (backward compatible)
-      - user_id: int (NEW)
-    """
+def create_access_token(data: dict, expires_minutes: Optional[int] = None) -> str:
     to_encode = data.copy()
     if expires_minutes is None:
         expires_minutes = ACCESS_TOKEN_EXPIRE_HOURS * 60
@@ -102,16 +95,16 @@ def create_access_token(data: dict, expires_minutes: int | None = None) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_user_by_email(db: Session, email: str) -> User | None:
+def get_user_by_email(db: Session, email: str) -> Optional[User]:
     email = normalize_email(email)
     return db.query(User).filter(User.email == email).first()
 
 
-def get_user_by_id(db: Session, user_id: int) -> User | None:
+def get_user_by_id(db: Session, user_id: int) -> Optional[User]:
     return db.query(User).filter(User.id == int(user_id)).first()
 
 
-def authenticate_user(db: Session, email: str, password: str) -> User | None:
+def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
     user = get_user_by_email(db, email)
     if not user or not user.password_hash:
         return None
@@ -124,23 +117,17 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    """
-    ✅ NEW: Token payload'dan önce user_id ile bulur.
-    ✅ Fallback: sub(email) ile bulur (eski tokenlar bozulmasın).
-    """
     token = credentials.credentials
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
-        # 1) NEW yolu: user_id
         user_id = payload.get("user_id")
         if user_id is not None:
             user = get_user_by_id(db, int(user_id))
             if user:
                 return user
 
-        # 2) Fallback: sub(email) (backward compatible)
         email = payload.get("sub")
         if not email:
             raise HTTPException(status_code=401, detail="Invalid token payload")
@@ -158,11 +145,6 @@ def get_current_user(
 
 
 def verify_password_reset_token(token: str, db: Session) -> User:
-    """
-    Password reset token:
-      - sub: email
-      - type: password_reset
-    """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         token_type = payload.get("type")
@@ -183,26 +165,18 @@ def verify_password_reset_token(token: str, db: Session) -> User:
 
 
 def get_onboarding_completed(user: User) -> bool:
-    # Backward compatible: kolon yoksa patlamasın
     return bool(getattr(user, "onboarding_completed", False))
 
 
-# --- Routes ---
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     email = normalize_email(payload.email)
 
     if get_user_by_email(db, email):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already in use",
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already in use")
 
     if db.query(User).filter(User.username == payload.username).first():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Username already in use",
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already in use")
 
     user = User(
         email=email,
@@ -210,7 +184,6 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         password_hash=hash_password(payload.password),
     )
 
-    # onboarding default False
     try:
         user.onboarding_completed = False
     except Exception:
@@ -220,10 +193,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    return RegisterResponse(
-        message="User created successfully.",
-        user=user,
-    )
+    return RegisterResponse(message="User created successfully.", user=user)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -232,12 +202,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = authenticate_user(db, email, payload.password)
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
-    # ✅ NEW: access token artık user_id içeriyor
     token = create_access_token({"sub": user.email, "user_id": user.id})
 
     onboarding_completed = get_onboarding_completed(user)
@@ -246,7 +212,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     return TokenResponse(
         access_token=token,
         token_type="bearer",
-        user_id=user.id,                 # ✅ NEW: Flutter bunu saklayacak
+        user_id=user.id,
         username=user.username,
         needs_onboarding=needs_onboarding,
     )
@@ -283,7 +249,6 @@ def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(
     email = normalize_email(payload.email)
     user = get_user_by_email(db, email)
 
-    # User enumeration engeli
     if not user:
         return {"message": "If this email exists, a reset email has been sent."}
 
@@ -297,7 +262,6 @@ def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(
         return {"message": "Password reset email sent."}
     except Exception as e:
         print("EMAIL ERROR:", e)
-        # DEV için token döndürme (prod'da kapat)
         return {
             "message": "Failed to send email. (DEV) Returning reset token.",
             "reset_token": reset_token,

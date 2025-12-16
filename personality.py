@@ -1,62 +1,95 @@
-from typing import List, Union
-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import desc
 
 from database import get_db
-from models import PersonalityResponse, User
+from models import PersonalityResponse, User, UserProfile
 from auth import get_current_user
 
-router = APIRouter(prefix="/personality", tags=["Personality"])
+router = APIRouter(prefix="/personality", tags=["Personality / Onboarding"])
 
 
-class PersonalityRequest(BaseModel):
-    q1_answer: str   # yaş aralığı
-    q2_answer: str   # cinsiyet
-    q3_answer: str   # ruh hali
-    q4_answer: Union[List[str], str]  # Flutter bazen string yollayabilir
+class PersonalitySubmitRequest(BaseModel):
+    q1_answer: str  # Age range
+    q2_answer: str  # Gender
+    q3_answer: str  # Current mood
+    q4_answer: str  # Support topics
 
 
-class PersonalityResponseDTO(BaseModel):
-    id: int
-    user_id: int
-    q1_answer: str
-    q2_answer: str
-    q3_answer: str
-    q4_answer: str
-
-    class Config:
-        from_attributes = True
+class PersonalitySubmitResponse(BaseModel):
+    message: str
+    onboarding_completed: bool
 
 
-def _normalize_topics(q4: Union[List[str], str]) -> str:
-    if isinstance(q4, list):
-        items = [x.strip() for x in q4 if str(x).strip()]
-        return ", ".join(items)
-    # string geldiyse:
-    return str(q4).strip()
-
-
-@router.post("/submit", response_model=PersonalityResponseDTO)
-def submit_personality(
-    payload: PersonalityRequest,
+@router.post(
+    "/submit",
+    response_model=PersonalitySubmitResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def submit_personality_test(
+    payload: PersonalitySubmitRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    q4_joined = _normalize_topics(payload.q4_answer)
-    if not q4_joined:
-        raise HTTPException(status_code=400, detail="q4_answer cannot be empty")
+    """
+    ✅ NEW BEHAVIOR:
+    - PersonalityResponse (history) yaz
+    - UserProfile (kalıcı AI context) yaz / güncelle
+    - user.onboarding_completed = True
+    """
 
-    record = PersonalityResponse(
+    if getattr(current_user, "onboarding_completed", False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Personality test already completed.",
+        )
+
+    response = PersonalityResponse(
         user_id=current_user.id,
         q1_answer=payload.q1_answer,
         q2_answer=payload.q2_answer,
         q3_answer=payload.q3_answer,
-        q4_answer=q4_joined,
+        q4_answer=payload.q4_answer,
     )
 
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-    return record
+    try:
+        db.add(response)
+
+        # ✅ Upsert UserProfile (latest record)
+        profile = (
+            db.query(UserProfile)
+            .filter(UserProfile.user_id == current_user.id)
+            .order_by(desc(UserProfile.id))
+            .first()
+        )
+        if not profile:
+            profile = UserProfile(user_id=current_user.id)
+
+        profile.age_range = payload.q1_answer
+        profile.gender = payload.q2_answer
+        profile.mood = payload.q3_answer
+        profile.support_topics = payload.q4_answer
+
+        db.add(profile)
+
+        # ✅ onboarding flag
+        current_user.onboarding_completed = True
+        db.add(current_user)
+
+        db.commit()
+        db.refresh(current_user)
+
+    except SQLAlchemyError as e:
+        db.rollback()
+        print("DB ERROR submit_personality_test:", str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Database error while saving personality test.",
+        )
+
+    return {
+        "message": "Personality test completed successfully.",
+        "onboarding_completed": True,
+    }

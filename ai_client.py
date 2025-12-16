@@ -10,15 +10,12 @@ load_dotenv()
 
 AI_WEBHOOK_URL = (os.getenv("AI_WEBHOOK_URL") or "").strip()
 
+
 class AIClientError(Exception):
     pass
 
 
 def _extract_reply(data: Any) -> Optional[str]:
-    """
-    n8n farklı node'lardan farklı key ile dönebiliyor.
-    Hepsini tolere edelim.
-    """
     if data is None:
         return None
 
@@ -26,13 +23,11 @@ def _extract_reply(data: Any) -> Optional[str]:
         return data.strip() or None
 
     if isinstance(data, dict):
-        # en yaygınlar
         for k in ["reply", "textResponse", "text", "output", "message"]:
             v = data.get(k)
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
-        # bazen nested dönebiliyor
         nested = data.get("data")
         if isinstance(nested, dict):
             for k in ["reply", "textResponse", "text", "output", "message"]:
@@ -54,11 +49,11 @@ async def generate_response(
     if not AI_WEBHOOK_URL:
         raise AIClientError("AI_WEBHOOK_URL tanımlı değil (Render env).")
 
+    # ✅ NEW CONTRACT: n8n string userContext bekliyor
     payload: Dict[str, Any] = {
         "message": message,
         "history": history or [],
-        # HER ZAMAN gönder (boş olsa bile contract stabil kalsın)
-        "userContext": user_context or "",
+        "userContext": (user_context or "").strip(),
     }
 
     headers = {
@@ -77,7 +72,7 @@ async def generate_response(
         pool=10.0,
     )
 
-    last_err: Exception | None = None
+    last_err: Optional[Exception] = None
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         for attempt in range(1, max_attempts + 1):
@@ -106,11 +101,10 @@ async def generate_response(
                         f"raw_preview={body_bytes[:80]!r}"
                     )
 
-                # JSON parse dene, olmazsa plain-text kabul et
                 try:
                     data = res.json()
                 except json.JSONDecodeError:
-                    # n8n bazen text dönerse bile kurtar
+                    # JSON değilse plain text döndüyse onu reply say
                     return raw
 
                 reply = _extract_reply(data)
