@@ -1,5 +1,7 @@
-# suggestions.py
+# suggestions.py (FULL REVISE)
 import os
+import re
+import json
 from typing import List, Optional, Literal
 from datetime import date
 
@@ -94,8 +96,79 @@ class DailyIngestRequest(BaseModel):
 
 # ===================== HELPERS =====================
 
+_JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_text_from_possible_json(raw: str) -> str:
+    """
+    Accepts:
+      - plain string
+      - ```json { "text": "..." } ```
+      - { "text": "..." } as a string
+    Returns:
+      - best-effort extracted text
+    """
+    s = (raw or "").strip()
+    if not s:
+        return s
+
+    # 1) fenced code block
+    m = _JSON_FENCE_RE.match(s)
+    if m:
+        s = (m.group(1) or "").strip()
+
+    # 2) if looks like JSON object, try parse
+    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                # prefer text keys
+                for k in ("text", "reply", "message", "output"):
+                    v = obj.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+            # if list -> first element recurse
+            if isinstance(obj, list) and obj:
+                first = obj[0]
+                if isinstance(first, dict):
+                    for k in ("text", "reply", "message", "output"):
+                        v = first.get(k)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+        except Exception:
+            pass
+
+    return s
+
+
+def _sanitize_text(text: str) -> str:
+    """
+    Normalize & clean messy AI outputs.
+    - removes fenced json wrapper
+    - extracts {"text": "..."} payloads
+    - collapses excessive whitespace
+    """
+    t = _extract_text_from_possible_json(text)
+
+    # collapse whitespace (keep newlines but normalize crazy spacing)
+    t = t.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # If still starts with a stray json fence marker (edge cases)
+    t = re.sub(r"^\s*```(?:json)?\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s*```\s*$", "", t).strip()
+
+    # optional: if AI returns quoted string like "..."
+    if len(t) >= 2 and ((t[0] == '"' and t[-1] == '"') or (t[0] == "'" and t[-1] == "'")):
+        t = t[1:-1].strip()
+
+    # normalize internal whitespace
+    t = re.sub(r"[ \t]+", " ", t).strip()
+
+    return t
+
+
 def _validate_text(text: str) -> str:
-    t = (text or "").strip()
+    t = _sanitize_text(text)
     if not t:
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
     if len(t) > 500:
@@ -272,7 +345,6 @@ def feed_suggestions(
     - is_saved (current_user için)
     """
 
-    # Likes/Dislikes aggregate subquery
     agg = (
         db.query(
             SuggestionReaction.suggestion_id.label("sid"),
@@ -283,7 +355,6 @@ def feed_suggestions(
         .subquery()
     )
 
-    # Saved subquery (exists)
     saved = (
         db.query(SuggestionSave.suggestion_id.label("sid"))
         .filter(SuggestionSave.user_id == current_user.id)
@@ -394,9 +465,7 @@ def create_suggestion(
 ):
     text = _validate_text(payload.text)
 
-    # ✅ AUTO_APPROVE env (Flutter "hemen listede görünsün")
     auto_approve = (os.getenv("AUTO_APPROVE_SUGGESTIONS", "true").strip().lower() == "true")
-
     suggestion = Suggestion(user_id=current_user.id, text=text, is_approved=auto_approve)
 
     try:
