@@ -3,3 +3,17 @@ __pycache__/
 .env
 venv/
 .DS_Store
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtualenv
+.venv/
+env/
+
+# OS
+.DS_Store
+.env
