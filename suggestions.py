@@ -3,7 +3,7 @@ import os
 from typing import List, Optional, Literal
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Depends, status, Header
+from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,10 +14,10 @@ from models import (
     Suggestion,
     SuggestionReaction,
     SuggestionSave,
-    SuggestionComment,
+    SuggestionComment,      # ✅ FIX: comment endpoints için LAZIM
     User,
     PersonalityResponse,
-    GlobalDailySuggestion,   # ✅ GLOBAL DAILY TABLE
+    GlobalDailySuggestion,  # ✅ GLOBAL DAILY TABLE
 )
 from auth import get_current_user
 from ai_client import generate_response, AIClientError
@@ -76,7 +76,6 @@ class SuggestionDailyDTO(BaseModel):
         from_attributes = True
 
 
-# ✅ n8n -> backend ingest schema (GLOBAL DAILY)
 class DailyIngestRequest(BaseModel):
     text: str
 
@@ -205,7 +204,7 @@ async def _generate_ai_suggestion_text(db: Session, user_id: int) -> str:
             history=[],
             user_id=user_id,
             user_data=user_data,
-            user_context=_build_user_context(db, user_id),  # compat
+            user_context=_build_user_context(db, user_id),
         )
     except AIClientError as e:
         raise HTTPException(status_code=502, detail=f"AIClientError: {str(e)}")
@@ -249,7 +248,6 @@ def _get_fallback_global_tip(db: Session) -> Suggestion:
 
 # ===================== ROUTES =====================
 
-# ✅ 1) n8n scheduled flow bu endpoint'e POST atacak (GLOBAL DAILY)
 @router.post("/ingest-daily", status_code=200)
 def ingest_daily_suggestion(
     payload: DailyIngestRequest,
@@ -265,7 +263,6 @@ def ingest_daily_suggestion(
     text = _validate_text(payload.text)
     today = date.today()
 
-    # suggestions tablosuna kaydet (user_id=None)
     suggestion = Suggestion(user_id=None, text=text, is_approved=True)
     try:
         db.add(suggestion)
@@ -275,7 +272,6 @@ def ingest_daily_suggestion(
         db.rollback()
         raise HTTPException(status_code=500, detail="Database error while saving daily suggestion.")
 
-    # global mapping upsert
     try:
         row = db.query(GlobalDailySuggestion).filter(GlobalDailySuggestion.day == today).first()
         if row:
@@ -289,7 +285,6 @@ def ingest_daily_suggestion(
     return {"status": "ok", "day": str(today), "suggestion_id": suggestion.id}
 
 
-# ✅ 2) mobilin gördüğü daily endpoint (GLOBAL)
 @router.get("/daily", response_model=SuggestionDailyDTO)
 def get_daily_suggestion(
     db: Session = Depends(get_db),
@@ -319,7 +314,6 @@ def get_daily_suggestion(
     }
 
 
-# ✅ 3) Crowdsourcing create
 @router.post("/", response_model=SuggestionDTO, status_code=201)
 def create_suggestion(
     payload: SuggestionCreate,
@@ -340,7 +334,6 @@ def create_suggestion(
     return suggestion
 
 
-# ✅ 4) (opsiyonel) kişiye özel AI üretim endpointi — kırılmasın diye duruyor
 @router.post("/generate", response_model=SuggestionDTO, status_code=201)
 async def generate_daily_ai_suggestion(
     db: Session = Depends(get_db),
@@ -348,15 +341,19 @@ async def generate_daily_ai_suggestion(
 ):
     try:
         text = await _generate_ai_suggestion_text(db, current_user.id)
-        suggestion = Suggestion(user_id=current_user.id, text=text, is_approved=True)
 
+        suggestion = Suggestion(user_id=current_user.id, text=text, is_approved=True)
         db.add(suggestion)
         db.commit()
         db.refresh(suggestion)
         return suggestion
-    except HTTPException:
-        tip = _get_fallback_global_tip(db)
-        return tip
+
+    except (HTTPException, SQLAlchemyError):  # ✅ FIX: AI 502 dahil her şeyde fallback
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return _get_fallback_global_tip(db)
 
 
 @router.get("/saved/me", response_model=List[SuggestionDTO])
@@ -377,13 +374,12 @@ def list_my_saved(
     suggestion_ids = [r.suggestion_id for r in saved_rows]
     ordering = case({sid: i for i, sid in enumerate(suggestion_ids)}, value=Suggestion.id)
 
-    suggestions = (
+    return (
         db.query(Suggestion)
         .filter(Suggestion.id.in_(suggestion_ids))
         .order_by(ordering)
         .all()
     )
-    return suggestions
 
 
 @router.post("/react", status_code=200)
@@ -483,24 +479,21 @@ def add_comment(
 
 @router.get("/comment/{suggestion_id}", response_model=List[CommentDTO])
 def list_comments(suggestion_id: int, db: Session = Depends(get_db)):
-    comments = (
+    return (
         db.query(SuggestionComment)
         .filter(SuggestionComment.suggestion_id == suggestion_id)
         .order_by(desc(SuggestionComment.created_at))
         .limit(100)
         .all()
     )
-    return comments
 
 
-# 🚨 EN ÖNEMLİ: bunu EN SONA koyuyoruz yoksa ingest-daily gibi her şeyi yakalar
 @router.get("/{user_id}", response_model=List[SuggestionDTO])
 def list_user_suggestions(user_id: int, db: Session = Depends(get_db)):
-    suggestions = (
+    return (
         db.query(Suggestion)
         .filter(Suggestion.user_id == user_id, Suggestion.is_approved.is_(True))
         .order_by(desc(Suggestion.created_at))
         .limit(50)
         .all()
     )
-    return suggestions

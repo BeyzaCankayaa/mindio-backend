@@ -17,8 +17,6 @@ from sqlalchemy.orm import relationship
 from database import Base
 
 
-# ===================== USERS =====================
-
 class User(Base):
     __tablename__ = "users"
 
@@ -27,10 +25,9 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
 
-    # birth_date = Column(Date, nullable=True)  # şimdilik kapalı
+    onboarding_completed = Column(Boolean, nullable=False, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    # relations
     moods = relationship("Mood", back_populates="user", lazy="selectin")
     suggestions = relationship("Suggestion", back_populates="user", lazy="selectin")
     gamification_entries = relationship("Gamification", back_populates="user", lazy="selectin")
@@ -39,11 +36,8 @@ class User(Base):
     suggestion_saves = relationship("SuggestionSave", back_populates="user", lazy="selectin")
     suggestion_comments = relationship("SuggestionComment", back_populates="user", lazy="selectin")
 
-    # ✅ Daily suggestion mapping (kullanmasan bile ilişki temiz dursun)
     daily_suggestions = relationship("UserDailySuggestion", back_populates="user", lazy="selectin")
 
-
-# ===================== MOOD TRACKING =====================
 
 class Mood(Base):
     __tablename__ = "moods"
@@ -57,14 +51,10 @@ class Mood(Base):
     user = relationship("User", back_populates="moods")
 
 
-# ===================== PERSONALITY TEST =====================
-
 class PersonalityResponse(Base):
     __tablename__ = "personality_responses"
 
     id = Column(Integer, primary_key=True, index=True)
-
-    # İstersen nullable=True bırak (guest submit gibi). Yoksa nullable=False yap.
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
 
     q1_answer = Column(String, nullable=False)
@@ -74,11 +64,8 @@ class PersonalityResponse(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    # opsiyonel: kullanıcıyla bağ
     user = relationship("User", lazy="selectin")
 
-
-# ===================== CROWDSOURCING SUGGESTIONS =====================
 
 class Suggestion(Base):
     __tablename__ = "suggestions"
@@ -94,9 +81,10 @@ class Suggestion(Base):
 
     reactions = relationship("SuggestionReaction", back_populates="suggestion", lazy="selectin")
     saves = relationship("SuggestionSave", back_populates="suggestion", lazy="selectin")
+
+    # ✅ FIX: back_populates yanlışmış
     comments = relationship("SuggestionComment", back_populates="suggestion", lazy="selectin")
 
-    # ✅ Daily mapping relation (kullanmasan bile ilişki temiz dursun)
     daily_used_by = relationship("UserDailySuggestion", back_populates="suggestion", lazy="selectin")
 
 
@@ -107,9 +95,7 @@ class SuggestionReaction(Base):
     suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
-    # "like" | "dislike"
     reaction = Column(String(10), nullable=False)
-
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -151,9 +137,6 @@ class SuggestionComment(Base):
     suggestion = relationship("Suggestion", back_populates="comments", lazy="selectin")
 
 
-# ===================== DAILY SUGGESTION (PER USER PER DAY) =====================
-# (Amine'nin istediği global daily fixed tip'te kullanılmayacak, ama bırakıyoruz.)
-
 class UserDailySuggestion(Base):
     __tablename__ = "user_daily_suggestions"
 
@@ -170,7 +153,20 @@ class UserDailySuggestion(Base):
     suggestion = relationship("Suggestion", back_populates="daily_used_by", lazy="selectin")
 
 
-# ===================== GAMIFICATION =====================
+# ✅ NEW: GLOBAL DAILY (one per day)
+class GlobalDailySuggestion(Base):
+    __tablename__ = "global_daily_suggestions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
+    day = Column(Date, nullable=False, default=date.today, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("day", name="uq_global_daily_suggestion_day"),
+    )
+
+    suggestion = relationship("Suggestion", lazy="selectin")
+
 
 class Gamification(Base):
     __tablename__ = "gamification"
@@ -182,7 +178,7 @@ class Gamification(Base):
     badge_level = Column(String, nullable=False, server_default="Newbie")
 
     user = relationship("User", back_populates="gamification_entries", lazy="selectin")
-# ===================== CHARACTERS (SHOP + USER OWNERSHIP) =====================
+
 
 class Character(Base):
     __tablename__ = "characters"
