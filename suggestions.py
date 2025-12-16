@@ -14,10 +14,10 @@ from models import (
     Suggestion,
     SuggestionReaction,
     SuggestionSave,
-    SuggestionComment,      # ✅ FIX: comment endpoints için LAZIM
+    SuggestionComment,
     User,
     PersonalityResponse,
-    GlobalDailySuggestion,  # ✅ GLOBAL DAILY TABLE
+    GlobalDailySuggestion,
 )
 from auth import get_current_user
 from ai_client import generate_response, AIClientError
@@ -35,6 +35,18 @@ class SuggestionDTO(BaseModel):
     id: int
     user_id: Optional[int]
     text: str
+
+    class Config:
+        from_attributes = True
+
+
+class SuggestionFeedDTO(BaseModel):
+    id: int
+    user_id: Optional[int]
+    text: str
+    likes: int
+    dislikes: int
+    is_saved: bool
 
     class Config:
         from_attributes = True
@@ -248,6 +260,66 @@ def _get_fallback_global_tip(db: Session) -> Suggestion:
 
 # ===================== ROUTES =====================
 
+@router.get("/feed", response_model=List[SuggestionFeedDTO])
+def feed_suggestions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    ✅ Flutter'ın "Topluluk Önerileri" ekranı için:
+    - approved suggestions
+    - likes / dislikes
+    - is_saved (current_user için)
+    """
+
+    # Likes/Dislikes aggregate subquery
+    agg = (
+        db.query(
+            SuggestionReaction.suggestion_id.label("sid"),
+            func.sum(case((SuggestionReaction.reaction == "like", 1), else_=0)).label("likes"),
+            func.sum(case((SuggestionReaction.reaction == "dislike", 1), else_=0)).label("dislikes"),
+        )
+        .group_by(SuggestionReaction.suggestion_id)
+        .subquery()
+    )
+
+    # Saved subquery (exists)
+    saved = (
+        db.query(SuggestionSave.suggestion_id.label("sid"))
+        .filter(SuggestionSave.user_id == current_user.id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(
+            Suggestion.id,
+            Suggestion.user_id,
+            Suggestion.text,
+            func.coalesce(agg.c.likes, 0).label("likes"),
+            func.coalesce(agg.c.dislikes, 0).label("dislikes"),
+            case((saved.c.sid.isnot(None), True), else_=False).label("is_saved"),
+        )
+        .outerjoin(agg, agg.c.sid == Suggestion.id)
+        .outerjoin(saved, saved.c.sid == Suggestion.id)
+        .filter(Suggestion.is_approved.is_(True))
+        .order_by(desc(Suggestion.created_at))
+        .limit(200)
+        .all()
+    )
+
+    return [
+        {
+            "id": r.id,
+            "user_id": r.user_id,
+            "text": r.text,
+            "likes": int(r.likes or 0),
+            "dislikes": int(r.dislikes or 0),
+            "is_saved": bool(r.is_saved),
+        }
+        for r in rows
+    ]
+
+
 @router.post("/ingest-daily", status_code=200)
 def ingest_daily_suggestion(
     payload: DailyIngestRequest,
@@ -321,7 +393,11 @@ def create_suggestion(
     current_user: User = Depends(get_current_user),
 ):
     text = _validate_text(payload.text)
-    suggestion = Suggestion(user_id=current_user.id, text=text)
+
+    # ✅ AUTO_APPROVE env (Flutter "hemen listede görünsün")
+    auto_approve = (os.getenv("AUTO_APPROVE_SUGGESTIONS", "true").strip().lower() == "true")
+
+    suggestion = Suggestion(user_id=current_user.id, text=text, is_approved=auto_approve)
 
     try:
         db.add(suggestion)
@@ -348,7 +424,7 @@ async def generate_daily_ai_suggestion(
         db.refresh(suggestion)
         return suggestion
 
-    except (HTTPException, SQLAlchemyError):  # ✅ FIX: AI 502 dahil her şeyde fallback
+    except (HTTPException, SQLAlchemyError):
         try:
             db.rollback()
         except Exception:
