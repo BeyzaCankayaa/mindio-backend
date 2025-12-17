@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from database import get_db
-from models import User  # User kesin var
+from models import User
 from auth import get_current_user
 
 from ai_client import generate_response, AIClientError
@@ -20,9 +20,8 @@ class ChatRequest(BaseModel):
     message: str
     history: Optional[List[Any]] = None
 
-    # ✅ TRANSITION MODE:
-    # Flutter şu an gönderiyor olabilir. Biz KULLANMAYACAĞIZ (n8n'e yollamıyoruz),
-    # sadece DB boşsa userContext fallback üretmek için kullanacağız.
+    # ✅ TRANSITION MODE (Flutter şu an gönderebilir)
+    # DB boşsa fallback olarak kullanacağız
     userData: Optional[Dict[str, Any]] = None
 
 
@@ -40,90 +39,108 @@ def _safe_str(v: Any) -> str:
     return str(v).strip()
 
 
-def build_user_context_from_profile_dict(profile: Dict[str, Any]) -> str:
-    """
-    profile dict içinden userContext string üretir.
-    Farklı key isimlerini toleranslı okur (age/age_range, supportTopics/support_topics vs.)
-    """
-    age = _safe_str(profile.get("age_range") or profile.get("age") or profile.get("ageRange") or "unknown")
-    gender = _safe_str(profile.get("gender") or "unknown")
-    mood = _safe_str(profile.get("mood") or profile.get("current_mood") or profile.get("mood_default") or "neutral")
-    topics = _safe_str(profile.get("support_topics") or profile.get("supportTopics") or profile.get("topics") or "general")
-    location = _safe_str(profile.get("location") or "unknown")
-
-    # n8n string bekliyor
-    return f"Age: {age}, Gender: {gender}, Mood: {mood}, Topics: {topics}, Location: {location}"
-
-
 def _instruction_block() -> str:
-    # Bu blok LLM davranışı için güzel; userContext string'ine ekliyoruz.
-    # (n8n tarafında prompt'a gömüyorsan bu kısmı oraya taşıyabilirsin.)
     return (
-        " | INSTRUCTION: Speak Turkish. Short, clear, step-by-step. "
-        "Be supportive and practical. Avoid medical diagnosis. "
-        "If symptoms are severe or persistent, suggest seeking a professional."
+        "INSTRUCTION:\n"
+        "- Speak Turkish.\n"
+        "- Short, clear, practical.\n"
+        "- If user is 45+ and gender is male use 'Bey', if female use 'Hanım'.\n"
+        "- Avoid medical diagnosis.\n"
     )
 
 
-def fetch_user_profile_context(db: Session, user_id: int, fallback_userData: Optional[Dict[str, Any]]) -> str:
+def build_user_context(profile: Dict[str, Any]) -> str:
+    age = _safe_str(profile.get("age") or profile.get("age_range") or profile.get("ageRange") or "unknown")
+    gender = _safe_str(profile.get("gender") or "unknown")
+    mood = _safe_str(profile.get("mood") or profile.get("current_mood") or "neutral")
+    topics = _safe_str(profile.get("supportTopics") or profile.get("support_topics") or "general")
+    location = _safe_str(profile.get("location") or "unknown")
+
+    return (
+        "USER PROFILE:\n"
+        f"- AgeRange: {age}\n"
+        f"- Gender: {gender}\n"
+        f"- CurrentMood: {mood}\n"
+        f"- SupportTopics: {topics}\n"
+        f"- Location: {location}\n\n"
+        + _instruction_block()
+    )
+
+
+def fetch_user_profile_dict(
+    db: Session,
+    user_id: int,
+    fallback_userData: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     """
-    1) Öncelik: DB'de user_profile varsa ondan üret
-    2) Yoksa: PersonalityResponse (eski yapı) varsa ondan üret (backward compat)
-    3) Yoksa: fallback_userData ile üret
-    4) O da yoksa: unknown
+    Öncelik:
+    1) UserProfile (varsa)
+    2) PersonalityResponse (backward compat)
+    3) Flutter userData (fallback)
+    4) default unknown
     """
-    # --- 1) Try UserProfile model (if exists) ---
+
+    # 1) UserProfile (varsa)
     try:
         from models import UserProfile  # type: ignore
-        profile_obj = (
+
+        p = (
             db.query(UserProfile)
             .filter(UserProfile.user_id == user_id)
             .order_by(desc(UserProfile.id))
             .first()
         )
-        if profile_obj:
-            # obj -> dict (toleranslı)
-            profile_dict = {
-                "age_range": getattr(profile_obj, "age_range", None) or getattr(profile_obj, "age", None),
-                "gender": getattr(profile_obj, "gender", None),
-                "mood": getattr(profile_obj, "mood", None) or getattr(profile_obj, "current_mood", None),
-                "support_topics": getattr(profile_obj, "support_topics", None) or getattr(profile_obj, "supportTopics", None),
-                "location": getattr(profile_obj, "location", None),
+        if p:
+            return {
+                "age": getattr(p, "age_range", None) or getattr(p, "age", None) or "unknown",
+                "gender": getattr(p, "gender", None) or "unknown",
+                "mood": getattr(p, "mood", None) or getattr(p, "current_mood", None) or "neutral",
+                "supportTopics": getattr(p, "support_topics", None) or getattr(p, "supportTopics", None) or "general",
+                "location": getattr(p, "location", None) or "unknown",
             }
-            return build_user_context_from_profile_dict(profile_dict) + _instruction_block()
     except Exception:
-        # UserProfile yoksa veya import patlarsa sorun etmiyoruz (repo henüz migrate olmamış olabilir)
         pass
 
-    # --- 2) Backward compat: PersonalityResponse ---
+    # 2) PersonalityResponse (senin projede kesin var)
     try:
         from models import PersonalityResponse  # type: ignore
 
-        personality = (
+        pr = (
             db.query(PersonalityResponse)
             .filter(PersonalityResponse.user_id == user_id)
             .order_by(desc(PersonalityResponse.id))
             .first()
         )
-        if personality:
-            topics = (_safe_str(getattr(personality, "q4_answer", "")) or "general wellbeing")
-            profile_dict = {
-                "age_range": getattr(personality, "q1_answer", None) or "unknown",
-                "gender": getattr(personality, "q2_answer", None) or "unknown",
-                "mood": getattr(personality, "q3_answer", None) or "neutral",
-                "support_topics": topics,
+        if pr:
+            topics = (_safe_str(getattr(pr, "q4_answer", "")) or "general")
+            return {
+                "age": getattr(pr, "q1_answer", None) or "unknown",
+                "gender": getattr(pr, "q2_answer", None) or "unknown",
+                "mood": getattr(pr, "q3_answer", None) or "neutral",
+                "supportTopics": topics,
                 "location": "unknown",
             }
-            return build_user_context_from_profile_dict(profile_dict) + _instruction_block()
     except Exception:
         pass
 
-    # --- 3) Fallback: userData from Flutter (temporary) ---
+    # 3) Flutter fallback
     if isinstance(fallback_userData, dict) and fallback_userData:
-        return build_user_context_from_profile_dict(fallback_userData) + _instruction_block()
+        return {
+            "age": fallback_userData.get("age") or fallback_userData.get("ageRange") or "unknown",
+            "gender": fallback_userData.get("gender") or "unknown",
+            "mood": fallback_userData.get("mood") or "neutral",
+            "supportTopics": fallback_userData.get("supportTopics") or fallback_userData.get("support_topics") or "general",
+            "location": fallback_userData.get("location") or "unknown",
+        }
 
-    # --- 4) Default unknown ---
-    return build_user_context_from_profile_dict({}) + _instruction_block()
+    # 4) default
+    return {
+        "age": "unknown",
+        "gender": "unknown",
+        "mood": "neutral",
+        "supportTopics": "general",
+        "location": "unknown",
+    }
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -138,12 +155,21 @@ async def chat_with_ai(
 
     history = _normalize_history(payload.history)
 
-    # ✅ NEW: userContext DB’den (öncelikli) okunur, userData sadece fallback
-    user_context = fetch_user_profile_context(db=db, user_id=current_user.id, fallback_userData=payload.userData)
+    # ✅ Dinamik userData (DB öncelikli)
+    user_data = fetch_user_profile_dict(db=db, user_id=current_user.id, fallback_userData=payload.userData)
+
+    # ✅ userContext string (n8n prompt için stabil)
+    user_context = build_user_context(user_data)
 
     try:
-        # ✅ n8n'e: message + history + userContext (string)
-        reply = await generate_response(message=msg, history=history, user_context=user_context)
+        # ✅ ÖNEMLİ: generate_response’e user_id + user_data gönderiyoruz
+        reply = await generate_response(
+            message=msg,
+            history=history,
+            user_id=current_user.id,
+            user_data=user_data,
+            user_context=user_context,
+        )
         return ChatResponse(reply=reply)
 
     except AIClientError as e:
