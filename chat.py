@@ -39,10 +39,31 @@ def _safe_str(v: Any) -> str:
 
 
 def build_user_data_from_profile_dict(profile: Dict[str, Any]) -> Dict[str, Any]:
-    # ✅ n8n'de Amine'nin beklediği obje formatı
+    """
+    n8n'de Amine'nin beklediği obje formatı.
+    NOTE: LLM string "45+" gibi değerleri bazen yanlış yorumluyor.
+    Bu yüzden ageNumber (int) de gönderiyoruz.
+    """
+    import re
+
+    age_raw = _safe_str(
+        profile.get("age") or profile.get("age_range") or profile.get("ageRange") or "unknown"
+    )
+
+    # "45+" -> 45 | "18-24" -> 18 | "unknown" -> None
+    age_num: Optional[int] = None
+    m = re.search(r"\d+", age_raw)
+    if m:
+        try:
+            age_num = int(m.group(0))
+        except Exception:
+            age_num = None
+
     return {
         "userId": _safe_str(profile.get("userId") or profile.get("user_id") or profile.get("id") or ""),
-        "age": _safe_str(profile.get("age") or profile.get("age_range") or profile.get("ageRange") or "unknown"),
+        "age": age_raw,          # string: "45+"
+        "ageRange": age_raw,     # string duplicate (n8n için net)
+        "ageNumber": age_num,    # int: 45  ✅ KRİTİK
         "gender": _safe_str(profile.get("gender") or "unknown"),
         "mood": _safe_str(profile.get("mood") or profile.get("current_mood") or "neutral"),
         "supportTopics": _safe_str(profile.get("supportTopics") or profile.get("support_topics") or "general"),
