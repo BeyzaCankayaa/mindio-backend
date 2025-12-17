@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+import re
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
@@ -16,18 +17,22 @@ from ai_client import generate_response, AIClientError
 router = APIRouter(prefix="/ai", tags=["AI"])
 
 
+# =========================
+# Schemas
+# =========================
 class ChatRequest(BaseModel):
     message: str
     history: Optional[List[Any]] = None
-
-    # Flutter geçici yolluyor olabilir (DB boşsa fallback için)
-    userData: Optional[Dict[str, Any]] = None
+    userData: Optional[Dict[str, Any]] = None  # Flutter fallback
 
 
 class ChatResponse(BaseModel):
     reply: str
 
 
+# =========================
+# Helpers
+# =========================
 def _normalize_history(history: Optional[List[Any]]) -> List[Any]:
     return history if isinstance(history, list) else []
 
@@ -38,32 +43,33 @@ def _safe_str(v: Any) -> str:
     return str(v).strip()
 
 
-def build_user_data_from_profile_dict(profile: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    n8n'de Amine'nin beklediği obje formatı.
-    NOTE: LLM string "45+" gibi değerleri bazen yanlış yorumluyor.
-    Bu yüzden ageNumber (int) de gönderiyoruz.
-    """
-    import re
-
-    age_raw = _safe_str(
-        profile.get("age") or profile.get("age_range") or profile.get("ageRange") or "unknown"
-    )
-
-    # "45+" -> 45 | "18-24" -> 18 | "unknown" -> None
-    age_num: Optional[int] = None
-    m = re.search(r"\d+", age_raw)
+def _extract_age_number(age_raw: str) -> Optional[int]:
+    m = re.search(r"\d+", age_raw or "")
     if m:
         try:
-            age_num = int(m.group(0))
+            return int(m.group(0))
         except Exception:
-            age_num = None
+            return None
+    return None
+
+
+# =========================
+# UserData builders
+# =========================
+def build_user_data_from_profile_dict(profile: Dict[str, Any]) -> Dict[str, Any]:
+    age_raw = _safe_str(
+        profile.get("age")
+        or profile.get("age_range")
+        or profile.get("ageRange")
+        or "unknown"
+    )
+    age_num = _extract_age_number(age_raw)
 
     return {
         "userId": _safe_str(profile.get("userId") or profile.get("user_id") or profile.get("id") or ""),
-        "age": age_raw,          # string: "45+"
-        "ageRange": age_raw,     # string duplicate (n8n için net)
-        "ageNumber": age_num,    # int: 45  ✅ KRİTİK
+        "age": age_raw,          # "45+"
+        "ageRange": age_raw,     # explicit
+        "ageNumber": age_num,    # 45  ⭐ KRİTİK
         "gender": _safe_str(profile.get("gender") or "unknown"),
         "mood": _safe_str(profile.get("mood") or profile.get("current_mood") or "neutral"),
         "supportTopics": _safe_str(profile.get("supportTopics") or profile.get("support_topics") or "general"),
@@ -72,7 +78,7 @@ def build_user_data_from_profile_dict(profile: Dict[str, Any]) -> Dict[str, Any]
 
 
 def build_user_context_from_user_data(user_data: Dict[str, Any]) -> str:
-    # ✅ n8n string isteyen path'ler için de hazır dursun
+    # n8n string isteyen path'ler için
     age = _safe_str(user_data.get("age") or "unknown")
     gender = _safe_str(user_data.get("gender") or "unknown")
     mood = _safe_str(user_data.get("mood") or "neutral")
@@ -80,21 +86,28 @@ def build_user_context_from_user_data(user_data: Dict[str, Any]) -> str:
     location = _safe_str(user_data.get("location") or "unknown")
 
     return (
-        f"Age: {age}, Gender: {gender}, Mood: {mood}, Topics: {topics}, Location: {location} | "
-        "INSTRUCTION: Speak Turkish. Short and practical. No medical diagnosis. "
-        "If severe/persistent, suggest professional support."
+        f"Age: {age}, Gender: {gender}, Mood: {mood}, "
+        f"Topics: {topics}, Location: {location} | "
+        "INSTRUCTION: Speak Turkish. Short and practical. No medical diagnosis."
     )
 
 
-def fetch_user_data(db: Session, user_id: int, fallback_userData: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+# =========================
+# Fetch user data
+# =========================
+def fetch_user_data(
+    db: Session,
+    user_id: int,
+    fallback_userData: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     """
     Öncelik:
-    1) UserProfile (varsa)
-    2) PersonalityResponse (varsa)
-    3) Flutter payload.userData (fallback)
+    1) UserProfile
+    2) PersonalityResponse
+    3) Flutter payload.userData
     4) unknown
     """
-    # 1) UserProfile varsa
+    # 1) UserProfile
     try:
         from models import UserProfile  # type: ignore
         profile_obj = (
@@ -109,14 +122,14 @@ def fetch_user_data(db: Session, user_id: int, fallback_userData: Optional[Dict[
                 "age": getattr(profile_obj, "age_range", None) or getattr(profile_obj, "age", None),
                 "gender": getattr(profile_obj, "gender", None),
                 "mood": getattr(profile_obj, "mood", None) or getattr(profile_obj, "current_mood", None),
-                "supportTopics": getattr(profile_obj, "support_topics", None) or getattr(profile_obj, "supportTopics", None),
-                "location": getattr(profile_obj, "location", None) or "unknown",
+                "supportTopics": getattr(profile_obj, "support_topics", None),
+                "location": getattr(profile_obj, "location", None),
             }
             return build_user_data_from_profile_dict(profile_dict)
     except Exception:
         pass
 
-    # 2) PersonalityResponse backward compat
+    # 2) PersonalityResponse (legacy)
     try:
         from models import PersonalityResponse  # type: ignore
         p = (
@@ -126,13 +139,12 @@ def fetch_user_data(db: Session, user_id: int, fallback_userData: Optional[Dict[
             .first()
         )
         if p:
-            topics = (_safe_str(getattr(p, "q4_answer", "")) or "general wellbeing")
             profile_dict = {
                 "userId": str(user_id),
-                "age": getattr(p, "q1_answer", None) or "unknown",
-                "gender": getattr(p, "q2_answer", None) or "unknown",
-                "mood": getattr(p, "q3_answer", None) or "neutral",
-                "supportTopics": topics,
+                "age": getattr(p, "q1_answer", None),
+                "gender": getattr(p, "q2_answer", None),
+                "mood": getattr(p, "q3_answer", None),
+                "supportTopics": getattr(p, "q4_answer", None),
                 "location": "unknown",
             }
             return build_user_data_from_profile_dict(profile_dict)
@@ -141,15 +153,17 @@ def fetch_user_data(db: Session, user_id: int, fallback_userData: Optional[Dict[
 
     # 3) Flutter fallback
     if isinstance(fallback_userData, dict) and fallback_userData:
-        # userId yoksa ekle
         if "userId" not in fallback_userData and "user_id" not in fallback_userData:
             fallback_userData = {**fallback_userData, "userId": str(user_id)}
         return build_user_data_from_profile_dict(fallback_userData)
 
-    # 4) default unknown
+    # 4) Default
     return build_user_data_from_profile_dict({"userId": str(user_id)})
 
 
+# =========================
+# Endpoint
+# =========================
 @router.post("/chat", response_model=ChatResponse)
 async def chat_with_ai(
     payload: ChatRequest,
@@ -162,10 +176,12 @@ async def chat_with_ai(
 
     history = _normalize_history(payload.history)
 
-    # ✅ NEW: DB’den userData üret, gerekirse payload.userData fallback
-    user_data = fetch_user_data(db=db, user_id=current_user.id, fallback_userData=payload.userData)
+    user_data = fetch_user_data(
+        db=db,
+        user_id=current_user.id,
+        fallback_userData=payload.userData,
+    )
 
-    # ✅ userContext string’i de üret (ikisini birden gönderiyoruz)
     user_context = build_user_context_from_user_data(user_data)
 
     try:
@@ -173,8 +189,21 @@ async def chat_with_ai(
             message=msg,
             history=history,
             user_context=user_context,
-            user_data=user_data,   # ✅ NEW
+            user_data=user_data,
         )
+
+        # =========================
+        # HARD FILTER for 45+ (FINAL SAFETY NET)
+        # =========================
+        age_num = user_data.get("ageNumber")
+        if isinstance(age_num, int) and age_num >= 45:
+            # remove slang
+            reply = re.sub(r"\b(dostum|kanka)\b[,\s]*", "", reply, flags=re.IGNORECASE)
+            # remove emojis (broad range)
+            reply = re.sub(r"[\U0001F300-\U0001FAFF]+", "", reply)
+            # tidy spaces
+            reply = re.sub(r"[ \t]{2,}", " ", reply).strip()
+
         return ChatResponse(reply=reply)
 
     except AIClientError as e:
