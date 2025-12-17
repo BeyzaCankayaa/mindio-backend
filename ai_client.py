@@ -45,17 +45,40 @@ async def generate_response(
     message: str,
     history: Optional[List[Any]] = None,
     user_context: Optional[str] = None,
-    user_data: Optional[Dict[str, Any]] = None,   # ✅ NEW
+    user_data: Optional[Dict[str, Any]] = None,
 ) -> str:
     if not AI_WEBHOOK_URL:
         raise AIClientError("AI_WEBHOOK_URL tanımlı değil (Render env).")
 
+    # sanitize
+    msg = (message or "").strip()
+    hist = history if isinstance(history, list) else []
+    uctx = (user_context or "").strip()
+    udata = user_data if isinstance(user_data, dict) else {}
+
+    # ✅ payload: root + nested (n8n bazı yerlerde body/data karışabiliyor)
     payload: Dict[str, Any] = {
-        "message": message,
-        "history": history or [],
-        # ✅ BOTH CONTRACTS:
-        "userContext": (user_context or "").strip(),     # string
-        "userData": user_data or {},                    # object
+        "message": msg,
+        "history": hist,
+
+        # ✅ BOTH CONTRACTS
+        "userContext": uctx,      # string
+        "userData": udata,        # object (Amine prompt)
+
+        # ✅ ALSO PROVIDE nested data field (safety for n8n mappings)
+        "data": {
+            "message": msg,
+            "history": hist,
+            "userContext": uctx,
+            "userData": udata,
+        },
+
+        # ✅ debug marker (kız görsün gerçekten geliyor mu)
+        "meta": {
+            "source": "mindio-backend",
+            "hasUserData": bool(udata),
+            "userDataKeys": list(udata.keys())[:30],
+        },
     }
 
     headers = {
@@ -65,14 +88,7 @@ async def generate_response(
     }
 
     max_attempts = 3
-    backoff_seconds = 1.0
-
-    timeout = httpx.Timeout(
-        connect=10.0,
-        read=120.0,
-        write=30.0,
-        pool=10.0,
-    )
+    timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
     last_err: Optional[Exception] = None
 
@@ -120,7 +136,7 @@ async def generate_response(
             except (AIClientError, httpx.HTTPError, asyncio.TimeoutError) as e:
                 last_err = e
                 if attempt < max_attempts:
-                    await asyncio.sleep(backoff_seconds * attempt)
+                    await asyncio.sleep(1.0 * attempt)
                     continue
                 raise AIClientError(
                     f"AI çağrısı başarısız (attempt={attempt}/{max_attempts}): {str(e)}"
