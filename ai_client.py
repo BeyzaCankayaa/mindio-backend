@@ -45,16 +45,31 @@ async def generate_response(
     message: str,
     history: Optional[List[Any]] = None,
     user_context: Optional[str] = None,
+    user_id: Optional[int] = None,                 # ✅ NEW (optional)
+    user_data: Optional[Dict[str, Any]] = None,    # ✅ NEW (optional)
+    **kwargs,                                      # ✅ tolerate extra args
 ) -> str:
     if not AI_WEBHOOK_URL:
         raise AIClientError("AI_WEBHOOK_URL tanımlı değil (Render env).")
 
-    # ✅ NEW CONTRACT: n8n string userContext bekliyor
+    # ✅ payload: n8n tarafı neyi kullanıyorsa onu gönderebiliriz
     payload: Dict[str, Any] = {
         "message": message,
         "history": history or [],
-        "userContext": (user_context or "").strip(),
+        "userContext": (user_context or "").strip(),  # n8n string bekliyor
     }
+
+    # opsiyonel alanlar (n8n isterse kullanır, istemezse görmezden gelir)
+    if user_id is not None:
+        payload["userId"] = int(user_id)
+    if isinstance(user_data, dict) and user_data:
+        payload["userData"] = user_data
+
+    # ekstra gelen kwargs varsa ve çakışmıyorsa payload'a ekleyelim (safe)
+    # örn: some_flow_flag=True gibi
+    for k, v in kwargs.items():
+        if k not in payload and v is not None:
+            payload[k] = v
 
     headers = {
         "Accept": "application/json",
