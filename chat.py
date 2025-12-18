@@ -53,6 +53,57 @@ def _extract_age_number(age_raw: str) -> Optional[int]:
     return None
 
 
+def _apply_daily_override_from_mood_table(
+    db: Session,
+    user_id: int,
+    profile_dict: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Daily girişte alınan mood/supportTopics’in chat’e yansıması için:
+    Mood tablosundan en son kaydı çekip profile_dict üstüne override eder.
+
+    Sizin projede model adı değişebilir diye 3 olası adı dener:
+    Mood, MoodEntry, UserMood
+    """
+    mood_model = None
+    for name in ("Mood", "MoodEntry", "UserMood"):
+        try:
+            from models import __dict__ as models_dict  # type: ignore
+            mood_model = models_dict.get(name)
+            if mood_model is not None:
+                break
+        except Exception:
+            mood_model = None
+
+    if mood_model is None:
+        return profile_dict
+
+    try:
+        last_row = (
+            db.query(mood_model)
+            .filter(getattr(mood_model, "user_id") == user_id)
+            .order_by(desc(getattr(mood_model, "id")))
+            .first()
+        )
+        if not last_row:
+            return profile_dict
+
+        # DB alan adları: mood, note (openapi MoodCreate: mood + note)
+        mood_val = getattr(last_row, "mood", None)
+        note_val = getattr(last_row, "note", None)
+
+        if mood_val:
+            profile_dict["mood"] = mood_val
+
+        # Biz note'u "daily supportTopics" gibi kullanıyoruz (şimdilik)
+        if note_val:
+            profile_dict["supportTopics"] = note_val
+
+        return profile_dict
+    except Exception:
+        return profile_dict
+
+
 # =========================
 # UserData builders
 # =========================
@@ -102,9 +153,11 @@ def fetch_user_data(
 ) -> Dict[str, Any]:
     """
     Öncelik:
-    1) UserProfile
-    2) PersonalityResponse
-    3) Flutter payload.userData
+    1) UserProfile (sabit onboarding)
+       + DAILY override: mood tablosundan en güncel mood/supportTopics (her gün giriş)
+    2) PersonalityResponse (legacy)
+       + DAILY override
+    3) Flutter payload.userData (fallback)
     4) unknown
     """
     # 1) UserProfile
@@ -122,9 +175,13 @@ def fetch_user_data(
                 "age": getattr(profile_obj, "age_range", None) or getattr(profile_obj, "age", None),
                 "gender": getattr(profile_obj, "gender", None),
                 "mood": getattr(profile_obj, "mood", None) or getattr(profile_obj, "current_mood", None),
-                "supportTopics": getattr(profile_obj, "support_topics", None),
-                "location": getattr(profile_obj, "location", None),
+                "supportTopics": getattr(profile_obj, "support_topics", None) or getattr(profile_obj, "supportTopics", None),
+                "location": getattr(profile_obj, "location", None) or "unknown",
             }
+
+            # ✅ DAILY OVERRIDE (mood/add’dan gelen en güncel değerler)
+            profile_dict = _apply_daily_override_from_mood_table(db=db, user_id=user_id, profile_dict=profile_dict)
+
             return build_user_data_from_profile_dict(profile_dict)
     except Exception:
         pass
@@ -141,12 +198,16 @@ def fetch_user_data(
         if p:
             profile_dict = {
                 "userId": str(user_id),
-                "age": getattr(p, "q1_answer", None),
-                "gender": getattr(p, "q2_answer", None),
-                "mood": getattr(p, "q3_answer", None),
-                "supportTopics": getattr(p, "q4_answer", None),
+                "age": getattr(p, "q1_answer", None) or "unknown",
+                "gender": getattr(p, "q2_answer", None) or "unknown",
+                "mood": getattr(p, "q3_answer", None) or "neutral",
+                "supportTopics": getattr(p, "q4_answer", None) or "general",
                 "location": "unknown",
             }
+
+            # ✅ DAILY OVERRIDE yine uygula
+            profile_dict = _apply_daily_override_from_mood_table(db=db, user_id=user_id, profile_dict=profile_dict)
+
             return build_user_data_from_profile_dict(profile_dict)
     except Exception:
         pass
@@ -182,6 +243,7 @@ async def chat_with_ai(
         fallback_userData=payload.userData,
     )
 
+    # (opsiyonel) userContext — n8n bazı mappinglerde kullanabilir
     user_context = build_user_context_from_user_data(user_data)
 
     try:
@@ -193,15 +255,12 @@ async def chat_with_ai(
         )
 
         # =========================
-        # HARD FILTER for 45+ (FINAL SAFETY NET)
+        # HARD FILTER for 45+ (UI güvenliği)
         # =========================
         age_num = user_data.get("ageNumber")
         if isinstance(age_num, int) and age_num >= 45:
-            # remove slang
             reply = re.sub(r"\b(dostum|kanka)\b[,\s]*", "", reply, flags=re.IGNORECASE)
-            # remove emojis (broad range)
             reply = re.sub(r"[\U0001F300-\U0001FAFF]+", "", reply)
-            # tidy spaces
             reply = re.sub(r"[ \t]{2,}", " ", reply).strip()
 
         return ChatResponse(reply=reply)
