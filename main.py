@@ -12,7 +12,7 @@ from models import Base
 Base.metadata.create_all(bind=engine)
 
 # ==================== SEED ====================
-from seed_characters import seed_characters_if_empty
+#from seed_characters import seed_characters_if_empty 
 
 # ==================== ROUTER IMPORTS ====================
 from auth import router as auth_router
@@ -45,13 +45,6 @@ app.add_middleware(
 )
 
 # ==================== STARTUP (SEED) ====================
-@app.on_event("startup")
-def _seed_characters():
-    db = SessionLocal()
-    try:
-        seed_characters_if_empty(db)
-    finally:
-        db.close()
 
 # ==================== ROUTERS ====================
 app.include_router(auth_router)
