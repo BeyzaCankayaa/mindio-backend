@@ -1,3 +1,4 @@
+# seed_characters.py  (REVİZE)
 from sqlalchemy.orm import Session
 from models import Character
 
@@ -15,12 +16,28 @@ SHOP_CHARACTERS = [
     {"name": "Çalışkan Mindy", "asset_key": "caliskan", "cost": 10},
 ]
 
-def seed_characters_if_empty(db: Session) -> int:
-    exists = db.query(Character).first()
-    if exists:
-        return 0
+def seed_characters_upsert(db: Session) -> dict:
+    inserted = 0
+    updated = 0
 
-    rows = [Character(**c) for c in SHOP_CHARACTERS]
-    db.add_all(rows)
+    for c in SHOP_CHARACTERS:
+        existing = db.query(Character).filter(Character.asset_key == c["asset_key"]).first()
+        if existing:
+            changed = False
+            if existing.name != c["name"]:
+                existing.name = c["name"]
+                changed = True
+            if int(existing.cost or 0) != int(c["cost"]):
+                existing.cost = c["cost"]
+                changed = True
+            if hasattr(existing, "is_active") and existing.is_active is False:
+                existing.is_active = True
+                changed = True
+            if changed:
+                updated += 1
+        else:
+            db.add(Character(**c))
+            inserted += 1
+
     db.commit()
-    return len(rows)
+    return {"inserted": inserted, "updated": updated, "total_should_be": len(SHOP_CHARACTERS)}
