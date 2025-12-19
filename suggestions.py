@@ -68,6 +68,10 @@ class CommentCreate(BaseModel):
     text: str
 
 
+class CommentTextOnly(BaseModel):
+    text: str
+
+
 class CommentDTO(BaseModel):
     id: int
     suggestion_id: int
@@ -334,6 +338,8 @@ def _get_fallback_global_tip(db: Session) -> Suggestion:
 # ===================== ROUTES =====================
 
 @router.get("/feed", response_model=List[SuggestionFeedDTO])
+@router.get("", response_model=List[SuggestionFeedDTO], include_in_schema=False)
+@router.get("/", response_model=List[SuggestionFeedDTO], include_in_schema=False)
 def feed_suggestions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -458,6 +464,7 @@ def get_daily_suggestion(
 
 
 @router.post("/", response_model=SuggestionDTO, status_code=201)
+@router.post("", response_model=SuggestionDTO, status_code=201, include_in_schema=False)
 def create_suggestion(
     payload: SuggestionCreate,
     db: Session = Depends(get_db),
@@ -622,8 +629,23 @@ def add_comment(
     return comment
 
 
+@router.post("/comment/{suggestion_id}", response_model=CommentDTO, status_code=201, include_in_schema=False)
+def add_comment_by_id(
+    suggestion_id: int,
+    body: CommentTextOnly,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    payload = CommentCreate(suggestion_id=suggestion_id, text=body.text)
+    return add_comment(payload, db, current_user)
+
+
 @router.get("/comment/{suggestion_id}", response_model=List[CommentDTO])
-def list_comments(suggestion_id: int, db: Session = Depends(get_db)):
+def list_comments(
+    suggestion_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     return (
         db.query(SuggestionComment)
         .filter(SuggestionComment.suggestion_id == suggestion_id)
@@ -634,7 +656,11 @@ def list_comments(suggestion_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{user_id}", response_model=List[SuggestionDTO])
-def list_user_suggestions(user_id: int, db: Session = Depends(get_db)):
+def list_user_suggestions(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     return (
         db.query(Suggestion)
         .filter(Suggestion.user_id == user_id, Suggestion.is_approved.is_(True))
