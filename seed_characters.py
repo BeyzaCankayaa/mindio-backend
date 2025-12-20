@@ -11,7 +11,6 @@ from models import Character
 SHOP_CHARACTERS = [
     {"name": "Uzman Mindy",      "asset_key": "uzman",     "cost": 40},
     {"name": "Yazar Mindy",      "asset_key": "yazar",     "cost": 60},
-    {"name": "acedemindy",       "asset_key": "koc",       "cost": 100},  # eski Koç → acedemindy
     {"name": "Sporcu Mindy",     "asset_key": "sporcu",    "cost": 10},
     {"name": "Asci Mindy",       "asset_key": "asci",      "cost": 50},
     {"name": "Buyucu Mindy",     "asset_key": "buyucu",    "cost": 50},
