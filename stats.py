@@ -1,126 +1,74 @@
-# stats.py (FULL REVİZE)
-
+# stats.py (FULL)
 from datetime import date
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from database import get_db
-from models import User, Suggestion, Gamification, SuggestionReaction, ChatActivity
 from auth import get_current_user
+from models import (
+    User,
+    Suggestion,
+    SuggestionReaction,
+    Gamification,
+    ChatActivity,  # <-- activity.py eklediysek model adı bu olmalı
+)
+
+router = APIRouter(prefix="/stats", tags=["Stats"])
 
 
-# =========================
-# Existing: /user/stats (keep)
-# =========================
-router = APIRouter(prefix="/user", tags=["User Stats"])
+def _today_date_expr(db: Session, dt_col):
+    """
+    Postgres'ta timezone bug'ını azaltmak için created_at'i Europe/Istanbul gününe göre date'e çevirir.
+    Diğer DB'lerde düz func.date kullanır.
+    """
+    try:
+        dialect = db.bind.dialect.name  # type: ignore
+    except Exception:
+        dialect = ""
+
+    if dialect == "postgresql":
+        # created_at timestamptz ise: AT TIME ZONE ile TR gününe çevir
+        # func.timezone('Europe/Istanbul', col) -> timestamp (no tz)
+        return func.date(func.timezone("Europe/Istanbul", dt_col))
+    return func.date(dt_col)
 
 
-class UserStatsResponse(BaseModel):
-    user_id: int
-    total_suggestions: int
-    total_chats: int
-    total_likes: int
-    points: int
-    badge_level: str
-
-
-@router.get("/stats", response_model=UserStatsResponse)
-def get_user_stats(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    user_id = current_user.id
-
-    total_suggestions = (
-        db.query(func.count(Suggestion.id))
-        .filter(
-            Suggestion.user_id == user_id,
-            Suggestion.is_approved.is_(True),
-        )
-        .scalar()
-        or 0
-    )
-
-    total_chats = (
-        db.query(func.count(ChatActivity.id))
-        .filter(ChatActivity.user_id == user_id)
-        .scalar()
-        or 0
-    )
-
-    total_likes = (
-        db.query(func.count(SuggestionReaction.id))
-        .filter(
-            SuggestionReaction.user_id == user_id,
-            SuggestionReaction.reaction == "like",
-        )
-        .scalar()
-        or 0
-    )
-
-    gam = db.query(Gamification).filter(Gamification.user_id == user_id).first()
-    points = int(gam.points) if gam else 0
-    badge_level = gam.badge_level if gam else "Newbie"
-
-    return UserStatsResponse(
-        user_id=user_id,
-        total_suggestions=int(total_suggestions),
-        total_chats=int(total_chats),
-        total_likes=int(total_likes),
-        points=points,
-        badge_level=badge_level,
-    )
-
-
-# =========================
-# New: /stats/today (homepage)
-# =========================
-stats_router = APIRouter(prefix="/stats", tags=["Stats"])
-
-
-@stats_router.get("/today")
+@router.get("/today")
 def stats_today(
-    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    user_id = current_user.id
     today = date.today()
 
+    # 1) total_chats (bugün)
+    # ChatActivity modelinde day/date alanı yoksa created_at üzerinden sayıyoruz.
+    chat_day = _today_date_expr(db, ChatActivity.created_at)
     total_chats = (
-        db.query(func.count(ChatActivity.id))
-        .filter(
-            ChatActivity.user_id == user_id,
-            func.date(ChatActivity.created_at) == today,
-        )
-        .scalar()
-        or 0
+        db.query(ChatActivity)
+        .filter(ChatActivity.user_id == current_user.id, chat_day == today)
+        .count()
     )
 
+    # 2) suggestions_created (bugün)  ✅ APPROVAL ŞARTI YOK
+    sug_day = _today_date_expr(db, Suggestion.created_at)
     suggestions_created = (
-        db.query(func.count(Suggestion.id))
-        .filter(
-            Suggestion.user_id == user_id,
-            func.date(Suggestion.created_at) == today,
-        )
-        .scalar()
-        or 0
+        db.query(Suggestion)
+        .filter(Suggestion.user_id == current_user.id, sug_day == today)
+        .count()
     )
 
+    # 3) likes_given (bugün) -> user’ın verdiği reaction sayısı
+    react_day = _today_date_expr(db, SuggestionReaction.created_at)
     likes_given = (
-        db.query(func.count(SuggestionReaction.id))
-        .filter(
-            SuggestionReaction.user_id == user_id,
-            SuggestionReaction.reaction == "like",
-            func.date(SuggestionReaction.created_at) == today,
-        )
-        .scalar()
-        or 0
+        db.query(SuggestionReaction)
+        .filter(SuggestionReaction.user_id == current_user.id, react_day == today)
+        .count()
     )
 
-    gam = db.query(Gamification).filter(Gamification.user_id == user_id).first()
+    # 4) points (gamification)
+    gam = db.query(Gamification).filter(Gamification.user_id == current_user.id).first()
     points = int(gam.points) if gam else 0
 
     return {
