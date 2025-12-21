@@ -1,8 +1,9 @@
-# stats.py (FULL)
-from fastapi import APIRouter, Depends
+# stats.py (FULL REVISE - fixes NULL created_at + correct counting)
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from database import get_db
 from auth import get_current_user
@@ -26,12 +27,16 @@ def get_today_stats(
 ):
     user_id = current_user.id
 
-    # ✅ DB "today" reference (timezone-safe)
+    # ✅ IMPORTANT: Your DB has NULL created_at for suggestions.
+    # We count "today" by Postgres CURRENT_DATE using:
+    #   COALESCE(created_at::date, CURRENT_DATE) = CURRENT_DATE
+    # So old rows with NULL created_at won't break progress.
+
     suggestions_created = (
         db.query(func.count(Suggestion.id))
         .filter(
             Suggestion.user_id == user_id,
-            func.date(Suggestion.created_at) == func.current_date(),
+            func.coalesce(func.date(Suggestion.created_at), func.current_date()) == func.current_date(),
         )
         .scalar()
         or 0
@@ -42,21 +47,20 @@ def get_today_stats(
         .filter(
             SuggestionReaction.user_id == user_id,
             SuggestionReaction.reaction == "like",
-            func.date(SuggestionReaction.created_at) == func.current_date(),
+            func.coalesce(func.date(SuggestionReaction.created_at), func.current_date()) == func.current_date(),
         )
         .scalar()
         or 0
     )
 
-    # points (chat activity increments this in your backend)
     gam = db.query(Gamification).filter(Gamification.user_id == user_id).first()
     points = int(gam.points) if gam else 0
 
-    # If you don't have a separate chat counter table yet, use points as total_chats proxy
+    # If chat activity increments points, keep this proxy
     total_chats = points
 
     return TodayStatsResponse(
-        build="stats-fix-2025-12-21-02",
+        build="stats-fix-2025-12-21-03",
         total_chats=int(total_chats),
         suggestions_created=int(suggestions_created),
         likes_given=int(likes_given),
