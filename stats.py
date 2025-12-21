@@ -1,4 +1,4 @@
-# stats.py
+# stats.py (FULL)
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -12,6 +12,7 @@ router = APIRouter(prefix="/stats", tags=["Stats"])
 
 
 class TodayStatsResponse(BaseModel):
+    build: str
     total_chats: int
     suggestions_created: int
     likes_given: int
@@ -25,7 +26,7 @@ def get_today_stats(
 ):
     user_id = current_user.id
 
-    # ✅ BUGFIX: "bugün" = DB'nin CURRENT_DATE'i
+    # ✅ DB "today" reference (timezone-safe)
     suggestions_created = (
         db.query(func.count(Suggestion.id))
         .filter(
@@ -47,13 +48,15 @@ def get_today_stats(
         or 0
     )
 
+    # points (chat activity increments this in your backend)
     gam = db.query(Gamification).filter(Gamification.user_id == user_id).first()
     points = int(gam.points) if gam else 0
 
-    # Senin sistemde chat activity points artırıyor → total_chats'i points gibi gösteriyoruz
+    # If you don't have a separate chat counter table yet, use points as total_chats proxy
     total_chats = points
 
     return TodayStatsResponse(
+        build="stats-fix-2025-12-21-02",
         total_chats=int(total_chats),
         suggestions_created=int(suggestions_created),
         likes_given=int(likes_given),
@@ -61,5 +64,5 @@ def get_today_stats(
     )
 
 
-# ✅ main.py import uyumu
+# ✅ main.py import compatibility
 stats_router = router
