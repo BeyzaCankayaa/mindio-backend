@@ -1,3 +1,5 @@
+# main.py (FULL REVİZE)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -12,7 +14,7 @@ from models import Base
 Base.metadata.create_all(bind=engine)
 
 # ==================== SEED ====================
-#from seed_characters import seed_characters_if_empty 
+# from seed_characters import seed_characters_if_empty
 
 # ==================== ROUTER IMPORTS ====================
 from auth import router as auth_router
@@ -22,9 +24,11 @@ from personality import router as personality_router
 from suggestions import router as suggestions_router
 from gamification import router as gamification_router
 from stats import router as stats_router
+from stats import stats_router as stats_today_router  # ✅ NEW: /stats/today
 from user_profile import router as user_router
 from character import router as characters_router
 from user_character import router as user_characters_router
+from activity import router as activity_router  # ✅ NEW: /activity/chat
 
 # ==================== APP CONFIG ====================
 app = FastAPI(
@@ -45,6 +49,7 @@ app.add_middleware(
 )
 
 # ==================== STARTUP (SEED) ====================
+# (seed varsa burada çağırıyordun, dokunmadım)
 
 # ==================== ROUTERS ====================
 app.include_router(auth_router)
@@ -53,7 +58,12 @@ app.include_router(chat_router)
 app.include_router(personality_router)
 app.include_router(suggestions_router)
 app.include_router(gamification_router)
-app.include_router(stats_router)
+
+app.include_router(stats_router)         # /user/stats (mevcut)
+app.include_router(stats_today_router)   # /stats/today (NEW)
+
+app.include_router(activity_router)      # /activity/chat (NEW)
+
 app.include_router(user_router)
 app.include_router(characters_router)
 app.include_router(user_characters_router)

@@ -1,3 +1,5 @@
+# models.py (FULL REVİZE)
+
 from datetime import date
 
 from sqlalchemy import (
@@ -46,6 +48,9 @@ class User(Base):
 
     # ✅ NEW: AI için kalıcı profil
     profiles = relationship("UserProfile", back_populates="user", lazy="selectin")
+
+    # ✅ NEW: chat activity (homepage stats için)
+    chat_activities = relationship("ChatActivity", back_populates="user", lazy="selectin")
 
 
 class UserProfile(Base):
@@ -211,6 +216,17 @@ class Gamification(Base):
     badge_level = Column(String, nullable=False, server_default="Newbie")
 
     user = relationship("User", back_populates="gamification_entries", lazy="selectin")
+
+
+# ✅ NEW: Chat activity event table (n8n chat sonrası çağrılır)
+class ChatActivity(Base):
+    __tablename__ = "chat_activities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="chat_activities", lazy="selectin")
 
 
 class Character(Base):
