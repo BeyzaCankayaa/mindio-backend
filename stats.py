@@ -1,6 +1,4 @@
 # stats.py
-from datetime import date
-
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -25,38 +23,34 @@ def get_today_stats(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    today = date.today()
     user_id = current_user.id
 
-    # ✅ BUGFIX: suggestion sayacı approval’a bakmaz (kullanıcı yazdı mı yazdı)
+    # ✅ BUGFIX: "bugün" = DB'nin CURRENT_DATE'i
     suggestions_created = (
         db.query(func.count(Suggestion.id))
         .filter(
             Suggestion.user_id == user_id,
-            func.date(Suggestion.created_at) == today,
+            func.date(Suggestion.created_at) == func.current_date(),
         )
         .scalar()
         or 0
     )
 
-    # ✅ Likes given (user’ın verdiği like’lar) — bugünlük
     likes_given = (
         db.query(func.count(SuggestionReaction.id))
         .filter(
             SuggestionReaction.user_id == user_id,
             SuggestionReaction.reaction == "like",
-            func.date(SuggestionReaction.created_at) == today,
+            func.date(SuggestionReaction.created_at) == func.current_date(),
         )
         .scalar()
         or 0
     )
 
-    # ✅ total_chats ve points gamification’dan (senin activity/chat bunu artırıyor)
     gam = db.query(Gamification).filter(Gamification.user_id == user_id).first()
     points = int(gam.points) if gam else 0
 
-    # Eğer sende chat count’ı ayrı tabloda tutmuyorsan, şimdilik points = chat gibi gidiyor.
-    # Senin testte chat activity point artırdığı için total_chats’ı points olarak göstermek mantıklı.
+    # Senin sistemde chat activity points artırıyor → total_chats'i points gibi gösteriyoruz
     total_chats = points
 
     return TodayStatsResponse(
@@ -67,5 +61,5 @@ def get_today_stats(
     )
 
 
-# ✅ main.py import uyumu için
+# ✅ main.py import uyumu
 stats_router = router
