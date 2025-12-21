@@ -77,3 +77,5 @@ def stats_today(
         "likes_given": int(likes_given),
         "points": int(points),
     }
+# Alias for main.py imports (backward-compat)
+stats_router = router
