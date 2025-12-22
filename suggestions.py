@@ -1,7 +1,8 @@
 import os
 import re
 import json
-from typing import List, Optional, Literal
+import logging
+from typing import List, Optional, Literal, Tuple
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Depends, Header
@@ -24,28 +25,27 @@ from auth import get_current_user
 from ai_client import generate_response, AIClientError
 
 router = APIRouter(prefix="/suggestions", tags=["Crowdsourcing"])
-
+logger = logging.getLogger(__name__)
 
 # ===================== SCHEMAS =====================
 
 class SuggestionCreate(BaseModel):
     text: str
 
-
 class SuggestionDTO(BaseModel):
     id: int
     user_id: Optional[int]
     text: str
-    source: Optional[str] = None  # ✅ NEW (user/ai/system)
+    source: Optional[str] = None  # user/ai/system
 
     class Config:
         from_attributes = True
-
 
 class SuggestionFeedDTO(BaseModel):
     id: int
     user_id: Optional[int]
     text: str
+    source: Optional[str] = None
     likes: int
     dislikes: int
     is_saved: bool
@@ -53,24 +53,19 @@ class SuggestionFeedDTO(BaseModel):
     class Config:
         from_attributes = True
 
-
 class ReactionUpsert(BaseModel):
     suggestion_id: int
     reaction: Literal["like", "dislike"]
 
-
 class SaveToggle(BaseModel):
     suggestion_id: int
-
 
 class CommentCreate(BaseModel):
     suggestion_id: int
     text: str
 
-
 class CommentTextOnly(BaseModel):
     text: str
-
 
 class CommentDTO(BaseModel):
     id: int
@@ -81,11 +76,11 @@ class CommentDTO(BaseModel):
     class Config:
         from_attributes = True
 
-
 class SuggestionDailyDTO(BaseModel):
     id: int
     user_id: Optional[int]
     text: str
+    source: Optional[str] = None
     likes: int
     dislikes: int
     is_saved: bool
@@ -93,15 +88,12 @@ class SuggestionDailyDTO(BaseModel):
     class Config:
         from_attributes = True
 
-
 class DailyIngestRequest(BaseModel):
     text: str
-
 
 # ===================== HELPERS =====================
 
 _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
-
 
 def _extract_text_from_possible_json(raw: str) -> str:
     s = (raw or "").strip()
@@ -132,7 +124,6 @@ def _extract_text_from_possible_json(raw: str) -> str:
 
     return s
 
-
 def _sanitize_text(text: str) -> str:
     t = _extract_text_from_possible_json(text)
     t = t.replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -145,7 +136,6 @@ def _sanitize_text(text: str) -> str:
     t = re.sub(r"[ \t]+", " ", t).strip()
     return t
 
-
 def _validate_text(text: str) -> str:
     t = _sanitize_text(text)
     if not t:
@@ -154,31 +144,37 @@ def _validate_text(text: str) -> str:
         raise HTTPException(status_code=400, detail="Text is too long (max 500 chars).")
     return t
 
-
-def _likes_dislikes(db: Session, suggestion_id: int) -> tuple[int, int]:
+def _likes_dislikes(db: Session, suggestion_id: int) -> Tuple[int, int]:
     likes = (
         db.query(func.count(SuggestionReaction.id))
-        .filter(SuggestionReaction.suggestion_id == suggestion_id, SuggestionReaction.reaction == "like")
+        .filter(
+            SuggestionReaction.suggestion_id == suggestion_id,
+            SuggestionReaction.reaction == "like",
+        )
         .scalar()
         or 0
     )
     dislikes = (
         db.query(func.count(SuggestionReaction.id))
-        .filter(SuggestionReaction.suggestion_id == suggestion_id, SuggestionReaction.reaction == "dislike")
+        .filter(
+            SuggestionReaction.suggestion_id == suggestion_id,
+            SuggestionReaction.reaction == "dislike",
+        )
         .scalar()
         or 0
     )
     return int(likes), int(dislikes)
 
-
 def _is_saved(db: Session, suggestion_id: int, user_id: int) -> bool:
     return (
         db.query(SuggestionSave)
-        .filter(SuggestionSave.suggestion_id == suggestion_id, SuggestionSave.user_id == user_id)
+        .filter(
+            SuggestionSave.suggestion_id == suggestion_id,
+            SuggestionSave.user_id == user_id,
+        )
         .first()
         is not None
     )
-
 
 def _build_user_context(db: Session, user_id: int) -> str:
     p = (
@@ -207,6 +203,7 @@ def _build_user_context(db: Session, user_id: int) -> str:
         )
 
     topics = (p.q4_answer or "").strip() or "General wellbeing"
+
     return (
         "USER PROFILE:\n"
         f"- AgeRange: {p.q1_answer}\n"
@@ -215,7 +212,6 @@ def _build_user_context(db: Session, user_id: int) -> str:
         f"- SupportTopics: {topics}\n\n"
         + instruction
     )
-
 
 def _build_user_data(db: Session, user_id: int) -> dict:
     p = (
@@ -235,6 +231,7 @@ def _build_user_data(db: Session, user_id: int) -> dict:
         }
 
     topics = (p.q4_answer or "").strip() or "General wellbeing"
+
     return {
         "age": p.q1_answer or "unknown",
         "gender": p.q2_answer or "unknown",
@@ -243,34 +240,32 @@ def _build_user_data(db: Session, user_id: int) -> dict:
         "location": "unknown",
     }
 
-
 async def _generate_ai_suggestion_text(db: Session, user_id: int) -> str:
     user_data = _build_user_data(db, user_id)
     prompt = "Kullanıcının profil bilgilerine göre bugün için TEK bir öneri üret. Kısa olsun (1-2 cümle)."
 
     try:
         reply = await generate_response(
-    message=prompt,
-    history=[],
-    user_data=user_data,
-    user_context=_build_user_context(db, user_id),
-)
-
+            message=prompt,
+            history=[],
+            user_data=user_data,
+            user_context=_build_user_context(db, user_id),
+        )
     except AIClientError as e:
         raise HTTPException(status_code=502, detail=f"AIClientError: {str(e)}")
 
     return _validate_text(reply)
 
-
 def _get_fallback_global_tip(db: Session) -> Suggestion:
     """
     ✅ Fallback daily tip:
-    - öncelik: system/ai (global tip mantığı)
-    - sonra: herhangi approved
+    - prefer system/ai
+    - else any approved
+    Deterministic: day-of-year index
     """
     base_q = db.query(Suggestion).filter(Suggestion.is_approved.is_(True))
 
-    # prefer system/ai tips if source column exists in ORM
+    preferred: List[Suggestion] = []
     try:
         preferred = (
             base_q.filter(Suggestion.source.in_(["system", "ai"]))  # type: ignore[attr-defined]
@@ -287,7 +282,6 @@ def _get_fallback_global_tip(db: Session) -> Suggestion:
     idx = date.today().toordinal() % len(pool)
     return pool[idx]
 
-
 # ===================== ROUTES =====================
 
 @router.get("/feed", response_model=List[SuggestionFeedDTO])
@@ -298,11 +292,7 @@ def feed_suggestions(
     current_user: User = Depends(get_current_user),
 ):
     """
-    ✅ Flutter "Topluluk Önerileri":
-    - SADECE user kaynaklı öneriler (source='user')
-    - approved
-    - likes/dislikes
-    - is_saved
+    ✅ Community feed: only user suggestions (source='user')
     """
     agg = (
         db.query(
@@ -325,6 +315,7 @@ def feed_suggestions(
             Suggestion.id,
             Suggestion.user_id,
             Suggestion.text,
+            Suggestion.source,  # type: ignore[attr-defined]
             func.coalesce(agg.c.likes, 0).label("likes"),
             func.coalesce(agg.c.dislikes, 0).label("dislikes"),
             case((saved.c.sid.isnot(None), True), else_=False).label("is_saved"),
@@ -334,11 +325,9 @@ def feed_suggestions(
         .filter(Suggestion.is_approved.is_(True))
     )
 
-    # ✅ source='user' filtresi (ORM’de source field varsa)
     try:
         q = q.filter(Suggestion.source == "user")  # type: ignore[attr-defined]
     except Exception:
-        # source ORM’de yoksa sessiz geç (ama ideal olan models.py’de source eklemek)
         pass
 
     rows = q.order_by(desc(Suggestion.created_at)).limit(200).all()
@@ -348,13 +337,13 @@ def feed_suggestions(
             "id": r.id,
             "user_id": r.user_id,
             "text": r.text,
+            "source": getattr(r, "source", None),
             "likes": int(r.likes or 0),
             "dislikes": int(r.dislikes or 0),
             "is_saved": bool(r.is_saved),
         }
         for r in rows
     ]
-
 
 @router.post("/ingest-daily", status_code=200)
 def ingest_daily_suggestion(
@@ -363,8 +352,7 @@ def ingest_daily_suggestion(
     x_api_key: str = Header(default="", alias="X-API-KEY"),
 ):
     """
-    ✅ n8n -> backend global daily tip basar
-    Bu tip feed'e girmemeli => source='system'
+    ✅ n8n pushes global daily tip -> suggestion row with source='system'
     """
     expected = (os.getenv("DAILY_INGEST_KEY") or "").strip()
     if not expected:
@@ -375,7 +363,6 @@ def ingest_daily_suggestion(
     text = _validate_text(payload.text)
     today = date.today()
 
-    # ✅ system source
     try:
         suggestion = Suggestion(user_id=None, text=text, is_approved=True, source="system")  # type: ignore
     except Exception:
@@ -401,7 +388,6 @@ def ingest_daily_suggestion(
 
     return {"status": "ok", "day": str(today), "suggestion_id": suggestion.id}
 
-
 @router.get("/daily", response_model=SuggestionDailyDTO)
 def get_daily_suggestion(
     db: Session = Depends(get_db),
@@ -425,11 +411,11 @@ def get_daily_suggestion(
         "id": tip.id,
         "user_id": tip.user_id,
         "text": tip.text,
+        "source": getattr(tip, "source", None),
         "likes": likes,
         "dislikes": dislikes,
         "is_saved": saved,
     }
-
 
 @router.post("/", response_model=SuggestionDTO, status_code=201)
 @router.post("", response_model=SuggestionDTO, status_code=201, include_in_schema=False)
@@ -439,11 +425,11 @@ def create_suggestion(
     current_user: User = Depends(get_current_user),
 ):
     """
-    ✅ Kullanıcı önerisi => source='user'
+    ✅ User suggestion -> source='user'
     """
     text = _validate_text(payload.text)
-
     auto_approve = (os.getenv("AUTO_APPROVE_SUGGESTIONS", "true").strip().lower() == "true")
+
     try:
         suggestion = Suggestion(user_id=current_user.id, text=text, is_approved=auto_approve, source="user")  # type: ignore
     except Exception:
@@ -459,16 +445,18 @@ def create_suggestion(
 
     return suggestion
 
-
 @router.post("/generate", response_model=SuggestionDTO, status_code=201)
 async def generate_daily_ai_suggestion(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    ✅ AI önerisi => source='ai'
-    Feed'e girmemeli (feed source='user' filtreli)
+    ✅ AI suggestion -> source='ai'
+    default: on error => fallback
+    if DEBUG_AI_GENERATE=true => raise 502 (no fallback)
     """
+    debug = (os.getenv("DEBUG_AI_GENERATE", "false").strip().lower() == "true")
+
     try:
         text = await _generate_ai_suggestion_text(db, current_user.id)
 
@@ -482,13 +470,17 @@ async def generate_daily_ai_suggestion(
         db.refresh(suggestion)
         return suggestion
 
-    except (HTTPException, SQLAlchemyError):
+    except Exception as e:
+        logger.exception("AI generate failed: %s", str(e))
         try:
             db.rollback()
         except Exception:
             pass
-        return _get_fallback_global_tip(db)
 
+        if debug:
+            raise HTTPException(status_code=502, detail=f"AI generate failed: {str(e)}")
+
+        return _get_fallback_global_tip(db)
 
 @router.get("/saved/me", response_model=List[SuggestionDTO])
 def list_my_saved(
@@ -514,7 +506,6 @@ def list_my_saved(
         .order_by(ordering)
         .all()
     )
-
 
 @router.post("/react", status_code=200)
 def react_to_suggestion(
@@ -553,7 +544,6 @@ def react_to_suggestion(
 
     return {"status": "ok"}
 
-
 @router.post("/save", status_code=200)
 def toggle_save_suggestion(
     payload: SaveToggle,
@@ -586,7 +576,6 @@ def toggle_save_suggestion(
         db.rollback()
         raise HTTPException(status_code=500, detail="Database error while toggling save.")
 
-
 @router.post("/comment", response_model=CommentDTO, status_code=201)
 def add_comment(
     payload: CommentCreate,
@@ -610,7 +599,6 @@ def add_comment(
 
     return comment
 
-
 @router.get("/comment/{suggestion_id}", response_model=List[CommentDTO])
 def list_comments(
     suggestion_id: int,
@@ -624,7 +612,6 @@ def list_comments(
         .limit(100)
         .all()
     )
-
 
 @router.get("/{user_id}", response_model=List[SuggestionDTO])
 def list_user_suggestions(
