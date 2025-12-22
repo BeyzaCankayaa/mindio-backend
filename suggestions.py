@@ -1,4 +1,4 @@
-# suggestions.py (FULL REVISE)
+# suggestions.py (FULL REVIZE + source + AI output cleanup)
 
 import os
 import re
@@ -109,14 +109,25 @@ _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | r
 
 
 def _extract_text_from_possible_json(raw: str) -> str:
+    """
+    Accepts:
+      - plain string
+      - ```json { "text": "..." } ```
+      - { "text": "..." } as a string
+      - list payloads
+    Returns:
+      - best-effort extracted text
+    """
     s = (raw or "").strip()
     if not s:
         return s
 
+    # fenced json
     m = _JSON_FENCE_RE.match(s)
     if m:
         s = (m.group(1) or "").strip()
 
+    # json object / array
     if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
         try:
             obj = json.loads(s)
@@ -125,7 +136,6 @@ def _extract_text_from_possible_json(raw: str) -> str:
                     v = obj.get(k)
                     if isinstance(v, str) and v.strip():
                         return v.strip()
-
             if isinstance(obj, list) and obj:
                 first = obj[0]
                 if isinstance(first, dict):
@@ -140,55 +150,90 @@ def _extract_text_from_possible_json(raw: str) -> str:
 
 
 def _sanitize_text(text: str) -> str:
+    """
+    Normalize & clean messy AI outputs.
+    - removes fenced json wrapper
+    - extracts {"text": "..."} payloads
+    - strips markdown + emojis
+    - collapses whitespace
+    """
     t = _extract_text_from_possible_json(text)
-
     t = t.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # 1) fenced wrappers
     t = re.sub(r"^\s*```(?:json)?\s*", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\s*```\s*$", "", t).strip()
 
+    # 2) remove markdown formatting
+    t = re.sub(r"^\s*#{1,6}\s*", "", t, flags=re.MULTILINE)  # headings
+    t = re.sub(r"\*\*(.*?)\*\*", r"\1", t)                  # **bold**
+    t = re.sub(r"\*(.*?)\*", r"\1", t)                      # *italic*
+    t = re.sub(r"^\s*[-•]\s+", "", t, flags=re.MULTILINE)   # bullets
+
+    # 3) remove emojis (basic unicode range)
+    t = re.sub(r"[\U00010000-\U0010FFFF]", "", t)
+
+    # 4) collapse newlines into spaces
+    t = re.sub(r"\n{2,}", "\n", t)
+    t = re.sub(r"\s*\n\s*", " ", t).strip()
+
+    # 5) remove quoted wrapper
     if len(t) >= 2 and ((t[0] == '"' and t[-1] == '"') or (t[0] == "'" and t[-1] == "'")):
         t = t[1:-1].strip()
 
+    # 6) normalize internal whitespace
     t = re.sub(r"[ \t]+", " ", t).strip()
+
     return t
 
 
+def _clamp_to_2_sentences(t: str) -> str:
+    """
+    Return first 1-2 sentences max.
+    If sentence splitting fails, fallback to first ~200 chars.
+    """
+    s = (t or "").strip()
+    if not s:
+        return s
+
+    # naive sentence split for TR/EN punctuation
+    parts = re.split(r"(?<=[.!?])\s+", s)
+    parts = [p.strip() for p in parts if p.strip()]
+
+    if len(parts) <= 2:
+        return s
+
+    clipped = " ".join(parts[:2]).strip()
+    return clipped or s[:200].strip()
+
+
 def _validate_text(text: str) -> str:
-    """
-    ✅ Enforce:
-    - non-empty
-    - <= 500 chars
-    - MUST be 1-2 sentences (AI uzunsa otomatik keser)
-    """
     t = _sanitize_text(text)
+    t = _clamp_to_2_sentences(t)
+
     if not t:
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
     if len(t) > 500:
-        raise HTTPException(status_code=400, detail="Text is too long (max 500 chars).")
-
-    # ✅ 1-2 sentence clamp
-    sentences = re.split(r'(?<=[.!?])\s+', t)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    if len(sentences) > 2:
-        t = " ".join(sentences[:2]).strip()
-
-    # final trim
-    t = t.strip()
-    if not t:
-        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+        t = t[:500].strip()
     return t
 
 
 def _likes_dislikes(db: Session, suggestion_id: int) -> Tuple[int, int]:
     likes = (
         db.query(func.count(SuggestionReaction.id))
-        .filter(SuggestionReaction.suggestion_id == suggestion_id, SuggestionReaction.reaction == "like")
+        .filter(
+            SuggestionReaction.suggestion_id == suggestion_id,
+            SuggestionReaction.reaction == "like",
+        )
         .scalar()
         or 0
     )
     dislikes = (
         db.query(func.count(SuggestionReaction.id))
-        .filter(SuggestionReaction.suggestion_id == suggestion_id, SuggestionReaction.reaction == "dislike")
+        .filter(
+            SuggestionReaction.suggestion_id == suggestion_id,
+            SuggestionReaction.reaction == "dislike",
+        )
         .scalar()
         or 0
     )
@@ -198,7 +243,10 @@ def _likes_dislikes(db: Session, suggestion_id: int) -> Tuple[int, int]:
 def _is_saved(db: Session, suggestion_id: int, user_id: int) -> bool:
     return (
         db.query(SuggestionSave)
-        .filter(SuggestionSave.suggestion_id == suggestion_id, SuggestionSave.user_id == user_id)
+        .filter(
+            SuggestionSave.suggestion_id == suggestion_id,
+            SuggestionSave.user_id == user_id,
+        )
         .first()
         is not None
     )
@@ -212,14 +260,13 @@ def _build_user_context(db: Session, user_id: int) -> str:
         .first()
     )
 
-    # ✅ SERT KURAL: emoji/markdown/title yok
     instruction = (
         "INSTRUCTION:\n"
         "- Speak Turkish.\n"
-        "- Output MUST be exactly 1-2 sentences.\n"
-        "- No title, no bullet points, no markdown, no emojis.\n"
-        "- Only the suggestion text.\n"
+        "- Produce ONE short daily suggestion (1-2 sentences max).\n"
         "- Actionable, kind, practical.\n"
+        "- Do NOT use markdown headings/bullets.\n"
+        "- Do NOT use emojis.\n"
         "- No medical diagnosis.\n"
     )
 
@@ -273,9 +320,7 @@ def _build_user_data(db: Session, user_id: int) -> dict:
 
 async def _generate_ai_suggestion_text(db: Session, user_id: int) -> str:
     user_data = _build_user_data(db, user_id)
-
-    # ✅ prompt'u da sadeleştiriyoruz (instruction zaten context'te)
-    prompt = "Bugün için tek bir kısa öneri üret."
+    prompt = "Kullanıcının profil bilgilerine göre bugün için TEK bir öneri üret. Kısa olsun (1-2 cümle)."
 
     try:
         reply = await generate_response(
@@ -292,7 +337,7 @@ async def _generate_ai_suggestion_text(db: Session, user_id: int) -> str:
 
 def _get_fallback_global_tip(db: Session) -> Suggestion:
     """
-    ✅ Fallback daily tip:
+    Fallback daily tip:
     - prefer system/ai
     - else any approved
     Deterministic: day index
@@ -327,7 +372,7 @@ def feed_suggestions(
     current_user: User = Depends(get_current_user),
 ):
     """
-    ✅ Community feed: only user suggestions (source='user')
+    Community feed: only user suggestions (source='user')
     """
     agg = (
         db.query(
@@ -360,11 +405,9 @@ def feed_suggestions(
         .filter(Suggestion.is_approved.is_(True))
     )
 
-    # ✅ feed: ONLY source='user'
     try:
         q = q.filter(Suggestion.source == "user")  # type: ignore[attr-defined]
     except Exception:
-        # source yoksa, yine de approved dönsün (ama ideal: models.py'de var)
         pass
 
     rows = q.order_by(desc(Suggestion.created_at)).limit(200).all()
@@ -390,7 +433,7 @@ def ingest_daily_suggestion(
     x_api_key: str = Header(default="", alias="X-API-KEY"),
 ):
     """
-    ✅ n8n pushes global daily tip -> suggestion row with source='system'
+    n8n -> backend global daily tip (source='system')
     """
     expected = (os.getenv("DAILY_INGEST_KEY") or "").strip()
     if not expected:
@@ -465,7 +508,7 @@ def create_suggestion(
     current_user: User = Depends(get_current_user),
 ):
     """
-    ✅ User suggestion -> source='user'
+    User suggestion -> source='user'
     """
     text = _validate_text(payload.text)
     auto_approve = (os.getenv("AUTO_APPROVE_SUGGESTIONS", "true").strip().lower() == "true")
@@ -492,9 +535,10 @@ async def generate_daily_ai_suggestion(
     current_user: User = Depends(get_current_user),
 ):
     """
-    ✅ AI suggestion -> source='ai'
-    default: on error => fallback
-    if DEBUG_AI_GENERATE=true => raise 502 (no fallback)
+    AI suggestion -> source='ai'
+    On error:
+      - default fallback to global tip
+      - if DEBUG_AI_GENERATE=true -> return 502
     """
     debug = (os.getenv("DEBUG_AI_GENERATE", "false").strip().lower() == "true")
 
