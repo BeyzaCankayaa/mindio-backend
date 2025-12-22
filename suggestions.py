@@ -250,12 +250,12 @@ async def _generate_ai_suggestion_text(db: Session, user_id: int) -> str:
 
     try:
         reply = await generate_response(
-            message=prompt,
-            history=[],
-            user_id=user_id,
-            user_data=user_data,
-            user_context=_build_user_context(db, user_id),
-        )
+    message=prompt,
+    history=[],
+    user_data=user_data,
+    user_context=_build_user_context(db, user_id),
+)
+
     except AIClientError as e:
         raise HTTPException(status_code=502, detail=f"AIClientError: {str(e)}")
 
