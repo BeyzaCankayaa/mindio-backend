@@ -1,5 +1,6 @@
-# models.py (FULL REVİZE)
+from __future__ import annotations
 
+import enum
 from datetime import date
 
 from sqlalchemy import (
@@ -13,10 +14,20 @@ from sqlalchemy import (
     ForeignKey,
     func,
     UniqueConstraint,
+    Enum as SAEnum,
 )
 from sqlalchemy.orm import relationship
 
 from database import Base
+
+
+# =========================
+# Suggestion Source Enum
+# =========================
+class SuggestionSource(str, enum.Enum):
+    user = "user"
+    ai = "ai"
+    system = "system"
 
 
 class User(Base):
@@ -27,7 +38,6 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
 
-    # ✅ FIX: user_profile.py bunu kullanıyor
     birth_date = Column(Date, nullable=True)
 
     onboarding_completed = Column(Boolean, nullable=False, server_default="0")
@@ -40,30 +50,20 @@ class User(Base):
 
     suggestion_reactions = relationship("SuggestionReaction", back_populates="user", lazy="selectin")
     suggestion_saves = relationship("SuggestionSave", back_populates="user", lazy="selectin")
-
-    # ✅ FIX: comments tablosu var ama User'da relation yoktu → crash/orm warning çıkarır
     suggestion_comments = relationship("SuggestionComment", back_populates="user", lazy="selectin")
 
     daily_suggestions = relationship("UserDailySuggestion", back_populates="user", lazy="selectin")
 
-    # ✅ NEW: AI için kalıcı profil
     profiles = relationship("UserProfile", back_populates="user", lazy="selectin")
-
-    # ✅ NEW: chat activity (homepage stats için)
     chat_activities = relationship("ChatActivity", back_populates="user", lazy="selectin")
 
 
 class UserProfile(Base):
-    """
-    ✅ NEW TABLE: AI context için kalıcı ve güvenilir profil datası.
-    Personality test sonuçları buraya yazılacak.
-    """
     __tablename__ = "user_profiles"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
-    # Personality test / onboarding alanları
     age_range = Column(String(50), nullable=True)
     gender = Column(String(50), nullable=True)
     mood = Column(String(50), nullable=True)
@@ -85,14 +85,10 @@ class Mood(Base):
     note = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    user = relationship("User", back_populates="moods")
+    user = relationship("User", back_populates="moods", lazy="selectin")
 
 
 class PersonalityResponse(Base):
-    """
-    Backward-compat / history amaçlı tutulabilir.
-    Asıl kalıcı veri UserProfile.
-    """
     __tablename__ = "personality_responses"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -113,7 +109,18 @@ class Suggestion(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
     text = Column(String(500), nullable=False)
+
+    # ✅ NEW: Source (user/ai/system)
+    # NOTE: DB already has enum type: suggestion_source
+    # Use server_default="user" to match the DB default safely.
+    source = Column(
+        SAEnum(SuggestionSource, name="suggestion_source"),
+        nullable=False,
+        server_default="user",
+        index=True,  # ✅ index at Column level
+    )
 
     is_approved = Column(Boolean, nullable=False, server_default="1")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -137,9 +144,7 @@ class SuggestionReaction(Base):
     reaction = Column(String(10), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("suggestion_id", "user_id", name="uq_reaction_suggestion_user"),
-    )
+    __table_args__ = (UniqueConstraint("suggestion_id", "user_id", name="uq_reaction_suggestion_user"),)
 
     user = relationship("User", back_populates="suggestion_reactions", lazy="selectin")
     suggestion = relationship("Suggestion", back_populates="reactions", lazy="selectin")
@@ -154,9 +159,7 @@ class SuggestionSave(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("suggestion_id", "user_id", name="uq_save_suggestion_user"),
-    )
+    __table_args__ = (UniqueConstraint("suggestion_id", "user_id", name="uq_save_suggestion_user"),)
 
     user = relationship("User", back_populates="suggestion_saves", lazy="selectin")
     suggestion = relationship("Suggestion", back_populates="saves", lazy="selectin")
@@ -184,9 +187,7 @@ class UserDailySuggestion(Base):
     suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
     day = Column(Date, nullable=False, default=date.today, index=True)
 
-    __table_args__ = (
-        UniqueConstraint("user_id", "day", name="uq_user_daily_suggestion"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "day", name="uq_user_daily_suggestion"),)
 
     user = relationship("User", back_populates="daily_suggestions", lazy="selectin")
     suggestion = relationship("Suggestion", back_populates="daily_used_by", lazy="selectin")
@@ -199,9 +200,7 @@ class GlobalDailySuggestion(Base):
     suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
     day = Column(Date, nullable=False, default=date.today, index=True)
 
-    __table_args__ = (
-        UniqueConstraint("day", name="uq_global_daily_suggestion_day"),
-    )
+    __table_args__ = (UniqueConstraint("day", name="uq_global_daily_suggestion_day"),)
 
     suggestion = relationship("Suggestion", lazy="selectin")
 
@@ -218,7 +217,6 @@ class Gamification(Base):
     user = relationship("User", back_populates="gamification_entries", lazy="selectin")
 
 
-# ✅ NEW: Chat activity event table (n8n chat sonrası çağrılır)
 class ChatActivity(Base):
     __tablename__ = "chat_activities"
 
@@ -252,9 +250,7 @@ class UserCharacter(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("user_id", "character_id", name="uq_user_character"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "character_id", name="uq_user_character"),)
 
     user = relationship("User", lazy="selectin")
     character = relationship("Character", back_populates="owners", lazy="selectin")

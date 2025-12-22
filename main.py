@@ -11,7 +11,7 @@ load_dotenv()
 from database import engine, SessionLocal
 from models import Base
 
-Base.metadata.create_all(bind=engine)
+
 
 # ==================== SEED ====================
 # from seed_characters import seed_characters_if_empty
