@@ -18,3 +18,4 @@ env/
 .DS_Store
 .env
 alembic.ini
+alembic.ini
