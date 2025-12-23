@@ -60,6 +60,9 @@ class User(Base):
     # UserProfile
     profiles = relationship("UserProfile", back_populates="user", lazy="selectin")
 
+    # Shop / Characters
+    owned_characters = relationship("UserCharacter", back_populates="user", lazy="selectin")
+
     # Rewards
     reward_claims = relationship("RewardClaim", back_populates="user", lazy="selectin")
 
@@ -244,6 +247,29 @@ class Character(Base):
     is_active = Column(Boolean, nullable=False, server_default="true")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    owners = relationship("UserCharacter", back_populates="character", lazy="selectin")
+
+
+# =========================
+# USER CHARACTERS (Owned)
+# =========================
+class UserCharacter(Base):
+    __tablename__ = "user_characters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    character_id = Column(Integer, ForeignKey("characters.id"), nullable=False, index=True)
+
+    # This is used by user_character.py (active selected character)
+    is_active = Column(Boolean, nullable=False, server_default="false")
+
+    acquired_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (UniqueConstraint("user_id", "character_id", name="uq_user_character"),)
+
+    user = relationship("User", back_populates="owned_characters", lazy="selectin")
+    character = relationship("Character", back_populates="owners", lazy="selectin")
 
 
 # =========================
