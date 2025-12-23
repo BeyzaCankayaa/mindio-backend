@@ -187,25 +187,3 @@ class UserCharacter(Base):
 # =========================
 # REWARDS  ✅ EKLENEN
 # =========================
-class Reward(Base):
-    __tablename__ = "rewards"
-
-    id = Column(Integer, primary_key=True)
-    name = Column(String(100), nullable=False)
-    points = Column(Integer, nullable=False, server_default="0")
-    is_active = Column(Boolean, nullable=False, server_default="1")
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-class RewardClaim(Base):
-    __tablename__ = "reward_claims"
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    reward_id = Column(Integer, ForeignKey("rewards.id"), nullable=False)
-    claimed_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "reward_id", name="uq_user_reward"),
-    )

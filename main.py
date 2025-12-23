@@ -57,7 +57,7 @@ app.include_router(activity_router)      # /activity/chat
 app.include_router(user_router)
 app.include_router(characters_router)
 app.include_router(user_characters_router)
-app.include_router(rewards_router)       # ✅ /rewards/claim
+  # ✅ /rewards/claim
 
 # ==================== HEALTH ====================
 @app.get("/", tags=["Health"])
