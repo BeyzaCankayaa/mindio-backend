@@ -1,3 +1,6 @@
+
+print("USER_CHARACTER ROUTER LOADED")
+
 # user_character.py
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
