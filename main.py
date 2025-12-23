@@ -46,6 +46,7 @@ app.include_router(activity_router)
 app.include_router(user_router)
 app.include_router(characters_router)
 app.include_router(user_characters_router)
+
 app.include_router(rewards_router)  # ✅ BU ŞART
 
 @app.get("/", tags=["Health"])
