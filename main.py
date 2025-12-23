@@ -51,7 +51,4 @@ app.include_router(rewards_router)  # ✅ BU ŞART
 
 @app.get("/", tags=["Health"])
 def health_check():
-    return {
-        "status": "ok",
-        "message": "Mindio backend is running"
-    }
+    return {"status": "ok", "message": "Mindio backend is running"}

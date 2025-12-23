@@ -65,7 +65,7 @@ class User(Base):
 
 
 # =========================
-# USER PROFILE (FIX)
+# USER PROFILE
 # =========================
 class UserProfile(Base):
     __tablename__ = "user_profiles"
@@ -80,12 +80,7 @@ class UserProfile(Base):
     location = Column(String(100), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="profiles", lazy="selectin")
 
@@ -106,7 +101,7 @@ class Mood(Base):
 
 
 # =========================
-# PERSONALITY
+# PERSONALITY RESPONSES (history)
 # =========================
 class PersonalityResponse(Base):
     __tablename__ = "personality_responses"
@@ -162,9 +157,7 @@ class SuggestionReaction(Base):
     reaction = Column(String(10), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("suggestion_id", "user_id", name="uq_reaction_suggestion_user"),
-    )
+    __table_args__ = (UniqueConstraint("suggestion_id", "user_id", name="uq_reaction_suggestion_user"),)
 
     user = relationship("User", back_populates="suggestion_reactions", lazy="selectin")
     suggestion = relationship("Suggestion", back_populates="reactions", lazy="selectin")
@@ -179,9 +172,7 @@ class SuggestionSave(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("suggestion_id", "user_id", name="uq_save_suggestion_user"),
-    )
+    __table_args__ = (UniqueConstraint("suggestion_id", "user_id", name="uq_save_suggestion_user"),)
 
     user = relationship("User", back_populates="suggestion_saves", lazy="selectin")
     suggestion = relationship("Suggestion", back_populates="saves", lazy="selectin")
@@ -241,6 +232,21 @@ class Gamification(Base):
 
 
 # =========================
+# SHOP CHARACTERS
+# =========================
+class Character(Base):
+    __tablename__ = "characters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    asset_key = Column(String(50), nullable=False, unique=True, index=True)
+    cost = Column(Integer, nullable=False, server_default="0")
+    is_active = Column(Boolean, nullable=False, server_default="true")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# =========================
 # REWARDS
 # =========================
 class Reward(Base):
@@ -262,9 +268,7 @@ class RewardClaim(Base):
     reward_id = Column(Integer, ForeignKey("rewards.id"), nullable=False, index=True)
     claimed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("user_id", "reward_id", name="uq_user_reward"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "reward_id", name="uq_user_reward"),)
 
     user = relationship("User", back_populates="reward_claims", lazy="selectin")
     reward = relationship("Reward", back_populates="claims", lazy="selectin")

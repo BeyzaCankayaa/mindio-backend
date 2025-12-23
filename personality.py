@@ -5,7 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import desc
 
 from database import get_db
-from models import PersonalityResponse, User
+from models import PersonalityResponse, User, UserProfile
 from auth import get_current_user
 
 router = APIRouter(prefix="/personality", tags=["Personality / Onboarding"])
@@ -34,7 +34,6 @@ def submit_personality_test(
     current_user: User = Depends(get_current_user),
 ):
     """
-    ✅ NEW BEHAVIOR:
     - PersonalityResponse (history) yaz
     - UserProfile (kalıcı AI context) yaz / güncelle
     - user.onboarding_completed = True
@@ -57,7 +56,6 @@ def submit_personality_test(
     try:
         db.add(response)
 
-        # ✅ Upsert UserProfile (latest record)
         profile = (
             db.query(UserProfile)
             .filter(UserProfile.user_id == current_user.id)
@@ -74,7 +72,6 @@ def submit_personality_test(
 
         db.add(profile)
 
-        # ✅ onboarding flag
         current_user.onboarding_completed = True
         db.add(current_user)
 
