@@ -232,7 +232,7 @@ class RewardClaim(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "reward_id", name="uq_user_reward"),
     )
-from __future__ import annotations
+
 
 import enum
 from datetime import date
