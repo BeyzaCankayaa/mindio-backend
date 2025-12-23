@@ -23,3 +23,8 @@ alembic.ini
 # Alembic (local migrations)
 alembic/
 alembic.ini
+
+# Alembic (local migrations)
+alembic/
+alembic.ini
+

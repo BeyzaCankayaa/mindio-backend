@@ -29,6 +29,7 @@ from user_profile import router as user_router
 from character import router as characters_router
 from user_character import router as user_characters_router
 from activity import router as activity_router  # ✅ NEW: /activity/chat
+from rewards import router as rewards_router
 
 # ==================== APP CONFIG ====================
 app = FastAPI(
@@ -67,6 +68,8 @@ app.include_router(activity_router)      # /activity/chat (NEW)
 app.include_router(user_router)
 app.include_router(characters_router)
 app.include_router(user_characters_router)
+app.include_router(rewards_router)
+
 
 # ==================== HEALTH CHECK ====================
 @app.get("/", tags=["Health"])
