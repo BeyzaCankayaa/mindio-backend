@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# DB bootstrap (tables auto-create if no migrations)
+from database import Base, engine
 
 # Routers
 from auth import router as auth_router
@@ -16,7 +21,7 @@ from user_profile import router as user_router
 from character import router as characters_router
 from user_character import router as user_characters_router
 
-# Optional (disabled for now)
+# Optional (keep disabled until models exist)
 # from activity import router as activity_router
 # from rewards import router as rewards_router
 
@@ -29,8 +34,16 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ✅ CORS (Flutter Web / Flutlab fix)
-# Note: allow_origins=["*"] + allow_credentials=True is NOT allowed by browsers.
+# ✅ Startup: create tables (prevents "relation does not exist" on Render)
+@app.on_event("startup")
+def on_startup() -> None:
+    Base.metadata.create_all(bind=engine)
+
+
+# ✅ CORS (Flutter Web / Flutlab)
+# IMPORTANT:
+# - If allow_origins=["*"] then allow_credentials MUST be False
+# - This still allows Authorization header + POST
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
