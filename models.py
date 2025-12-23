@@ -1,8 +1,3 @@
-
-
-
-print("MODELS LOADED FROM:", __file__)
-
 from __future__ import annotations
 
 import enum
