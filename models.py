@@ -254,3 +254,15 @@ class UserCharacter(Base):
 
     user = relationship("User", lazy="selectin")
     character = relationship("Character", back_populates="owners", lazy="selectin")
+
+class RewardClaim(Base):
+    __tablename__ = "reward_claims"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reward_id = Column(Integer, ForeignKey("rewards.id"), nullable=False)
+    claimed_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "reward_id", name="uq_user_reward"),
+    )
