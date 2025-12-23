@@ -5,7 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import desc
 
 from database import get_db
-from models import PersonalityResponse, User, UserProfile
+from models import PersonalityResponse, User
 from auth import get_current_user
 
 router = APIRouter(prefix="/personality", tags=["Personality / Onboarding"])
