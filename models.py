@@ -4,17 +4,17 @@ import enum
 from datetime import date
 
 from sqlalchemy import (
+    Boolean,
     Column,
+    Date,
+    DateTime,
+    Enum as SAEnum,
+    ForeignKey,
     Integer,
     String,
-    DateTime,
-    Date,
     Text,
-    Boolean,
-    ForeignKey,
-    func,
     UniqueConstraint,
-    Enum as SAEnum,
+    func,
 )
 from sqlalchemy.orm import relationship
 
@@ -49,15 +49,14 @@ class User(Base):
     # Relations
     moods = relationship("Mood", back_populates="user", lazy="selectin")
     suggestions = relationship("Suggestion", back_populates="user", lazy="selectin")
-    gamification_entries = relationship("Gamification", back_populates="user", lazy="selectin")
 
     suggestion_reactions = relationship("SuggestionReaction", back_populates="user", lazy="selectin")
     suggestion_saves = relationship("SuggestionSave", back_populates="user", lazy="selectin")
     suggestion_comments = relationship("SuggestionComment", back_populates="user", lazy="selectin")
 
     daily_suggestions = relationship("UserDailySuggestion", back_populates="user", lazy="selectin")
+    gamification_entries = relationship("Gamification", back_populates="user", lazy="selectin")
 
-    # UserProfile
     profiles = relationship("UserProfile", back_populates="user", lazy="selectin")
 
     # Shop / Characters
@@ -261,9 +260,7 @@ class UserCharacter(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     character_id = Column(Integer, ForeignKey("characters.id"), nullable=False, index=True)
 
-    # This is used by user_character.py (active selected character)
     is_active = Column(Boolean, nullable=False, server_default="false")
-
     acquired_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (UniqueConstraint("user_id", "character_id", name="uq_user_character"),)
