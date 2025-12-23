@@ -59,10 +59,12 @@ def buy_character(
     if not char:
         raise HTTPException(status_code=404, detail="character_not_found")
 
-    g = db.query(Gamification).filter(Gamification.user_id == current_user.id).first()
+    g = db.query(Gamification).filter(Gamification.user_id == current_user.id).order_by(Gamification.id.desc()).first()
     if not g:
         g = Gamification(user_id=current_user.id, points=0, badge_level="Newbie")
-        db.add(g); db.commit(); db.refresh(g)
+        db.add(g)
+        db.commit()
+        db.refresh(g)
 
     if int(g.points) < int(char.cost):
         raise HTTPException(status_code=400, detail="insufficient_points")
@@ -72,14 +74,21 @@ def buy_character(
         UserCharacter.character_id == body.character_id
     ).first()
     if already:
-        # zaten sahipse direkt state dön
         return get_user_characters(db, current_user)
 
+    # ✅ 1) puanı düş
     g.points = int(g.points) - int(char.cost)
+    db.add(g)
+
+    # ✅ 2) satın alımı yaz
     db.add(UserCharacter(user_id=current_user.id, character_id=body.character_id, is_active=False))
+
+    # ✅ 3) commit + refresh
     db.commit()
+    db.refresh(g)
 
     return get_user_characters(db, current_user)
+
 
 @router.put("/active", response_model=UserCharactersResponse)
 def set_active_character(
