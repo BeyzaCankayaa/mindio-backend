@@ -15,7 +15,7 @@ from stats import stats_router as stats_today_router
 from user_profile import router as user_router
 from character import router as characters_router
 from user_character import router as user_characters_router
-from activity import router as activity_router
+#from activity import router as activity_router
 #from rewards import router as rewards_router
 
 app = FastAPI(
@@ -42,7 +42,7 @@ app.include_router(suggestions_router)
 app.include_router(gamification_router)
 app.include_router(stats_router)
 app.include_router(stats_today_router)
-app.include_router(activity_router)
+#app.include_router(activity_router)
 app.include_router(user_router)
 app.include_router(characters_router)
 app.include_router(user_characters_router)
