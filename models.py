@@ -30,6 +30,9 @@ class SuggestionSource(str, enum.Enum):
     system = "system"
 
 
+# =========================
+# USER
+# =========================
 class User(Base):
     __tablename__ = "users"
 
@@ -39,36 +42,30 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
 
     birth_date = Column(Date, nullable=True)
-
     onboarding_completed = Column(Boolean, nullable=False, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    # Relations
     moods = relationship("Mood", back_populates="user", lazy="selectin")
     suggestions = relationship("Suggestion", back_populates="user", lazy="selectin")
     gamification_entries = relationship("Gamification", back_populates="user", lazy="selectin")
-
-    suggestion_reactions = relationship("SuggestionReaction", back_populates="user", lazy="selectin")
-    suggestion_saves = relationship("SuggestionSave", back_populates="user", lazy="selectin")
-    suggestion_comments = relationship("SuggestionComment", back_populates="user", lazy="selectin")
-
-    daily_suggestions = relationship("UserDailySuggestion", back_populates="user", lazy="selectin")
-
     profiles = relationship("UserProfile", back_populates="user", lazy="selectin")
     chat_activities = relationship("ChatActivity", back_populates="user", lazy="selectin")
 
 
+# =========================
+# USER PROFILE
+# =========================
 class UserProfile(Base):
     __tablename__ = "user_profiles"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
-    age_range = Column(String(50), nullable=True)
-    gender = Column(String(50), nullable=True)
-    mood = Column(String(50), nullable=True)
-    support_topics = Column(String(255), nullable=True)
-    location = Column(String(100), nullable=True)
+    age_range = Column(String(50))
+    gender = Column(String(50))
+    mood = Column(String(50))
+    support_topics = Column(String(255))
+    location = Column(String(100))
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -76,22 +73,29 @@ class UserProfile(Base):
     user = relationship("User", back_populates="profiles", lazy="selectin")
 
 
+# =========================
+# MOOD
+# =========================
 class Mood(Base):
     __tablename__ = "moods"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     mood = Column(String(50), nullable=False)
-    note = Column(Text, nullable=True)
+    note = Column(Text)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="moods", lazy="selectin")
 
 
+# =========================
+# PERSONALITY
+# =========================
 class PersonalityResponse(Base):
     __tablename__ = "personality_responses"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
 
     q1_answer = Column(String, nullable=False)
@@ -101,25 +105,22 @@ class PersonalityResponse(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    user = relationship("User", lazy="selectin")
 
-
+# =========================
+# SUGGESTIONS
+# =========================
 class Suggestion(Base):
     __tablename__ = "suggestions"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
-
     text = Column(String(500), nullable=False)
 
-    # ✅ NEW: Source (user/ai/system)
-    # NOTE: DB already has enum type: suggestion_source
-    # Use server_default="user" to match the DB default safely.
     source = Column(
         SAEnum(SuggestionSource, name="suggestion_source"),
         nullable=False,
         server_default="user",
-        index=True,  # ✅ index at Column level
+        index=True,
     )
 
     is_approved = Column(Boolean, nullable=False, server_default="1")
@@ -127,88 +128,14 @@ class Suggestion(Base):
 
     user = relationship("User", back_populates="suggestions", lazy="selectin")
 
-    reactions = relationship("SuggestionReaction", back_populates="suggestion", lazy="selectin")
-    saves = relationship("SuggestionSave", back_populates="suggestion", lazy="selectin")
-    comments = relationship("SuggestionComment", back_populates="suggestion", lazy="selectin")
 
-    daily_used_by = relationship("UserDailySuggestion", back_populates="suggestion", lazy="selectin")
-
-
-class SuggestionReaction(Base):
-    __tablename__ = "suggestion_reactions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-
-    reaction = Column(String(10), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    __table_args__ = (UniqueConstraint("suggestion_id", "user_id", name="uq_reaction_suggestion_user"),)
-
-    user = relationship("User", back_populates="suggestion_reactions", lazy="selectin")
-    suggestion = relationship("Suggestion", back_populates="reactions", lazy="selectin")
-
-
-class SuggestionSave(Base):
-    __tablename__ = "suggestion_saves"
-
-    id = Column(Integer, primary_key=True, index=True)
-    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    __table_args__ = (UniqueConstraint("suggestion_id", "user_id", name="uq_save_suggestion_user"),)
-
-    user = relationship("User", back_populates="suggestion_saves", lazy="selectin")
-    suggestion = relationship("Suggestion", back_populates="saves", lazy="selectin")
-
-
-class SuggestionComment(Base):
-    __tablename__ = "suggestion_comments"
-
-    id = Column(Integer, primary_key=True, index=True)
-    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-
-    text = Column(String(500), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    user = relationship("User", back_populates="suggestion_comments", lazy="selectin")
-    suggestion = relationship("Suggestion", back_populates="comments", lazy="selectin")
-
-
-class UserDailySuggestion(Base):
-    __tablename__ = "user_daily_suggestions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
-    day = Column(Date, nullable=False, default=date.today, index=True)
-
-    __table_args__ = (UniqueConstraint("user_id", "day", name="uq_user_daily_suggestion"),)
-
-    user = relationship("User", back_populates="daily_suggestions", lazy="selectin")
-    suggestion = relationship("Suggestion", back_populates="daily_used_by", lazy="selectin")
-
-
-class GlobalDailySuggestion(Base):
-    __tablename__ = "global_daily_suggestions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    suggestion_id = Column(Integer, ForeignKey("suggestions.id"), nullable=False, index=True)
-    day = Column(Date, nullable=False, default=date.today, index=True)
-
-    __table_args__ = (UniqueConstraint("day", name="uq_global_daily_suggestion_day"),)
-
-    suggestion = relationship("Suggestion", lazy="selectin")
-
-
+# =========================
+# GAMIFICATION
+# =========================
 class Gamification(Base):
     __tablename__ = "gamification"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
     points = Column(Integer, nullable=False, server_default="0")
@@ -217,20 +144,24 @@ class Gamification(Base):
     user = relationship("User", back_populates="gamification_entries", lazy="selectin")
 
 
+# =========================
+# CHAT ACTIVITY
+# =========================
 class ChatActivity(Base):
     __tablename__ = "chat_activities"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    user = relationship("User", back_populates="chat_activities", lazy="selectin")
 
-
+# =========================
+# CHARACTERS
+# =========================
 class Character(Base):
     __tablename__ = "characters"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     name = Column(String(80), nullable=False)
     asset_key = Column(String(50), unique=True, nullable=False, index=True)
     cost = Column(Integer, nullable=False, server_default="0")
@@ -238,22 +169,34 @@ class Character(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    owners = relationship("UserCharacter", back_populates="character", lazy="selectin")
-
 
 class UserCharacter(Base):
     __tablename__ = "user_characters"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     character_id = Column(Integer, ForeignKey("characters.id"), nullable=False, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (UniqueConstraint("user_id", "character_id", name="uq_user_character"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "character_id", name="uq_user_character"),
+    )
 
-    user = relationship("User", lazy="selectin")
-    character = relationship("Character", back_populates="owners", lazy="selectin")
+
+# =========================
+# REWARDS  ✅ EKLENEN
+# =========================
+class Reward(Base):
+    __tablename__ = "rewards"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    points = Column(Integer, nullable=False, server_default="0")
+    is_active = Column(Boolean, nullable=False, server_default="1")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
 
 class RewardClaim(Base):
     __tablename__ = "reward_claims"
@@ -261,7 +204,7 @@ class RewardClaim(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     reward_id = Column(Integer, ForeignKey("rewards.id"), nullable=False)
-    claimed_at = Column(DateTime, default=func.now())
+    claimed_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint("user_id", "reward_id", name="uq_user_reward"),
